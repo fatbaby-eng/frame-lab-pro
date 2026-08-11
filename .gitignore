@@ -22,3 +22,8 @@ npm-debug.log*
 # Temp files
 build-check.py
 fix-layout.py
+
+# Build scripts
+git-setup.py
+build-check.py
+fix-layout.py
