@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 
 # Build output (only source goes to GitHub; CI builds dist)
 dist/
@@ -20,10 +19,8 @@ Thumbs.db
 npm-debug.log*
 
 # Temp files
-build-check.py
-fix-layout.py
-
-# Build scripts
 git-setup.py
+git-cleanup.py
 build-check.py
 fix-layout.py
+check-dist.py
