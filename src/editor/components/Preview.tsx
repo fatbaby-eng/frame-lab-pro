@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 
 export default function Preview() {
-  const { state } = useEditor();
+  const { state, selectClip } = useEditor();
   const { currentTime, project } = state;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -276,6 +276,74 @@ export default function Preview() {
     ctx.restore();
   }
 
+  // Click-to-select on canvas
+  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const clickX = (e.clientX - rect.left) * scaleX;
+    const clickY = (e.clientY - rect.top) * scaleY;
+
+    const t = currentTime;
+    const cw = canvas.width;
+    const ch = canvas.height;
+
+    // Find visible clips at current time, topmost first
+    const visibleClips: Clip[] = [];
+    for (let ti = comp.tracks.length - 1; ti >= 0; ti--) {
+      const track = comp.tracks[ti];
+      if (!track.visible) continue;
+      for (const clip of track.clips) {
+        if (t >= clip.start && t < clip.start + clip.duration) {
+          visibleClips.push(clip);
+        }
+      }
+    }
+
+    for (const clip of visibleClips) {
+      const clipT = t - clip.start;
+      const cx = cw / 2 + evalProp(clip.transform.x, clipT);
+      const cy = ch / 2 + evalProp(clip.transform.y, clipT);
+      const sx = evalProp(clip.transform.scaleX, clipT);
+      const sy = evalProp(clip.transform.scaleY, clipT);
+
+      // Approximate hit radius based on clip type
+      let radius = 50;
+      switch (clip.type) {
+        case 'text':
+          radius = Math.max((clip.textContent?.length || 5) * (clip.textStyle?.fontSize || 48) * 0.3, 30);
+          break;
+        case 'shape':
+          radius = 50;
+          break;
+        case 'mesh3d':
+          radius = 40;
+          break;
+        case 'audio':
+          radius = 70;
+          break;
+        case 'video':
+        case 'image': {
+          const asset = clip.assetId ? getAsset(clip.assetId) : null;
+          radius = Math.max(asset?.width || 400, asset?.height || 300) / 2;
+          break;
+        }
+      }
+      radius *= Math.max(sx, sy);
+
+      const dist = Math.sqrt((clickX - cx) ** 2 + (clickY - cy) ** 2);
+      if (dist <= radius) {
+        selectClip(clip.id);
+        return;
+      }
+    }
+
+    // Clicked empty space — deselect
+    selectClip(null);
+  }, [currentTime, comp, selectClip, getAsset]);
+
   return (
     <div className="flex flex-col h-full bg-surface-900 relative" ref={containerRef}>
       {/* Toolbar */}
@@ -319,6 +387,7 @@ export default function Preview() {
       <div className="flex-1 flex items-center justify-center overflow-auto p-4">
         <canvas
           ref={canvasRef}
+          onClick={handleCanvasClick}
           style={{
             width: comp.width * previewScale,
             height: comp.height * previewScale,

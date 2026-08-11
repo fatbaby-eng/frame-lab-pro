@@ -212,7 +212,7 @@ export default function Timeline() {
           {/* Tracks */}
           <div className="relative" style={{ width: Math.max(timelineWidth + 200, 800) }}>
             {comp.tracks.map(track => (
-              <div key={track.id} className="h-12 border-b border-surface-700 relative" onClick={(e) => { e.stopPropagation(); selectTrack(track.id); }}>
+              <div key={track.id} className="h-12 border-b border-surface-700 relative">
                 <div className="absolute inset-0 opacity-5" style={{ backgroundImage: 'repeating-linear-gradient(90deg, transparent, transparent ' + (zoom - 1) + 'px, #6366f1 ' + zoom + 'px)' }} />
                 {track.clips.map(clip => {
                   const left = timeToPx(clip.start);
@@ -224,6 +224,7 @@ export default function Timeline() {
                       className={`absolute top-1 h-10 rounded-md border ${clipColor(clip.type)} ${isSelected ? 'ring-2 ring-white/50 z-10' : ''} ${track.locked ? 'cursor-not-allowed' : 'cursor-move'} overflow-hidden`}
                       style={{ left, width }}
                       onMouseDown={(e) => onClipMouseDown(e, clip, track, 'move')}
+                      onClick={(e) => { e.stopPropagation(); selectClip(clip.id); }}
                     >
                       {!track.locked && (
                         <>
