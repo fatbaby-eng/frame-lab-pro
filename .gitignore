@@ -24,3 +24,16 @@ git-cleanup.py
 build-check.py
 fix-layout.py
 check-dist.py
+clean.py
+selfclean.py
+runner.py
+rm_temp.py
+rm_temp2.py
+final_cleanup.py
+cleanup_git.py
+do_git.py
+zz.py
+boom.py
+scheduler.py
+cleanup.py
+fin.py

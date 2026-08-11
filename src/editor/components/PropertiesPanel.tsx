@@ -3,7 +3,7 @@ import { evalProp } from '../types';
 import type { Transform, TextStyle } from '../types';
 import {
   Type, Image, Video, Music, Box, Shapes, Sparkles, Trash2, Plus,
-  ChevronDown, ChevronRight,
+  ChevronDown, ChevronRight, Link, Link2,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -18,6 +18,7 @@ export default function PropertiesPanel() {
 
   const [transformOpen, setTransformOpen] = useState(true);
   const [styleOpen, setStyleOpen] = useState(true);
+  const [lockScale, setLockScale] = useState(true);
 
   if (!clip) {
     return (
@@ -50,12 +51,21 @@ export default function PropertiesPanel() {
         keyframes: [{ time: 0, value, easing: 'linear' }],
       },
     };
+
+    // If lock is enabled, sync scaleX and scaleY
+    if (lockScale) {
+      if (key === 'scaleX') {
+        newTransform.scaleY = { keyframes: [{ time: 0, value, easing: 'linear' }] };
+      } else if (key === 'scaleY') {
+        newTransform.scaleX = { keyframes: [{ time: 0, value, easing: 'linear' }] };
+      }
+    }
+
     updateClipTransform(clip!.id, newTransform);
   };
 
   const addKeyframe = (_key: keyof Transform) => {
     showToast('Keyframe at current time');
-    // In a full implementation, we'd append to keyframes array
   };
 
   const iconForType = () => {
@@ -69,6 +79,10 @@ export default function PropertiesPanel() {
       default: return <Sparkles size={14} />;
     }
   };
+
+  // Pixel dimensions for shapes (base size = 100)
+  const shapeWidth = Math.round(100 * scaleX);
+  const shapeHeight = Math.round(100 * scaleY);
 
   return (
     <div className="h-full bg-surface-800 border-l border-surface-600 flex flex-col overflow-hidden">
@@ -95,10 +109,81 @@ export default function PropertiesPanel() {
             <div className="px-3 pb-3 space-y-2">
               <PropRow label="Position X" value={x} min={-2000} max={2000} step={1} onChange={v => updateValue('x', v)} onKeyframe={() => addKeyframe('x')} />
               <PropRow label="Position Y" value={y} min={-2000} max={2000} step={1} onChange={v => updateValue('y', v)} onKeyframe={() => addKeyframe('y')} />
-              <PropRow label="Scale X" value={scaleX} min={0} max={5} step={0.01} onChange={v => updateValue('scaleX', v)} onKeyframe={() => addKeyframe('scaleX')} />
-              <PropRow label="Scale Y" value={scaleY} min={0} max={5} step={0.01} onChange={v => updateValue('scaleY', v)} onKeyframe={() => addKeyframe('scaleY')} />
+
+              {/* Scale with lock toggle */}
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] text-slate-400 w-16 shrink-0">Scale X</label>
+                <input
+                  type="range"
+                  min={0}
+                  max={5}
+                  step={0.01}
+                  value={scaleX}
+                  onChange={e => updateValue('scaleX', parseFloat(e.target.value))}
+                  className="flex-1 accent-accent h-4"
+                />
+                <input
+                  type="number"
+                  value={Number(scaleX.toFixed(3))}
+                  onChange={e => updateValue('scaleX', parseFloat(e.target.value) || 0)}
+                  className="w-14 px-1 py-0.5 rounded bg-surface-700 border border-surface-600 text-[10px] text-white focus:border-accent outline-none text-right"
+                  step={0.01}
+                />
+                <button
+                  onClick={() => addKeyframe('scaleX')}
+                  className="w-4 h-4 rounded-full bg-surface-600 hover:bg-accent text-[8px] text-slate-400 hover:text-white flex items-center justify-center"
+                  title="Add keyframe"
+                >
+                  <Plus size={8} />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] text-slate-400 w-16 shrink-0">Scale Y</label>
+                <input
+                  type="range"
+                  min={0}
+                  max={5}
+                  step={0.01}
+                  value={scaleY}
+                  onChange={e => updateValue('scaleY', parseFloat(e.target.value))}
+                  className="flex-1 accent-accent h-4"
+                />
+                <input
+                  type="number"
+                  value={Number(scaleY.toFixed(3))}
+                  onChange={e => updateValue('scaleY', parseFloat(e.target.value) || 0)}
+                  className="w-14 px-1 py-0.5 rounded bg-surface-700 border border-surface-600 text-[10px] text-white focus:border-accent outline-none text-right"
+                  step={0.01}
+                />
+                <button
+                  onClick={() => setLockScale(!lockScale)}
+                  className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${lockScale ? 'bg-accent/30 text-accent-light' : 'bg-surface-600 text-slate-500 hover:text-slate-300'}`}
+                  title={lockScale ? 'Scale proportions locked' : 'Scale proportions unlocked'}
+                >
+                  {lockScale ? <Link size={10} /> : <Link2 size={10} />}
+                </button>
+              </div>
+
               <PropRow label="Rotation" value={rotation} min={-360} max={360} step={1} onChange={v => updateValue('rotation', v)} onKeyframe={() => addKeyframe('rotation')} />
               <PropRow label="Opacity" value={opacity} min={0} max={1} step={0.01} onChange={v => updateValue('opacity', v)} onKeyframe={() => addKeyframe('opacity')} />
+
+              {/* Pixel dimensions for shapes */}
+              {clip.type === 'shape' && (
+                <div className="flex items-center gap-2 pt-1 border-t border-surface-700/50">
+                  <label className="text-[10px] text-slate-500 w-16 shrink-0">Size</label>
+                  <div className="flex-1 flex gap-2">
+                    <div className="flex-1 bg-surface-700/50 rounded px-2 py-1 text-center">
+                      <span className="text-[9px] text-slate-500">W</span>
+                      <span className="text-[10px] text-slate-300 ml-1 font-mono">{shapeWidth}px</span>
+                    </div>
+                    <div className="flex-1 bg-surface-700/50 rounded px-2 py-1 text-center">
+                      <span className="text-[9px] text-slate-500">H</span>
+                      <span className="text-[10px] text-slate-300 ml-1 font-mono">{shapeHeight}px</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

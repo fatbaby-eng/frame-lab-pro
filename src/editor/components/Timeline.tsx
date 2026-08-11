@@ -21,7 +21,7 @@ export default function Timeline() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [dragMode, setDragMode] = useState<'move' | 'resize-left' | 'resize-right' | null>(null);
+  const [dragMode, setDragMode] = useState<'move' | 'resize-left' | 'resize-right' | 'playhead' | null>(null);
   const [dragClipId, setDragClipId] = useState<string | null>(null);
   const [dragStartX, setDragStartX] = useState(0);
   const [dragOrigStart, setDragOrigStart] = useState(0);
@@ -65,10 +65,26 @@ export default function Timeline() {
     setIsDragging(true);
   }, [selectClip]);
 
+  const onPlayheadMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDragMode('playhead');
+    setDragStartX(e.clientX);
+    setIsDragging(true);
+  }, []);
+
   useEffect(() => {
     if (!isDragging) return;
 
     const handleMouseMove = (e: MouseEvent) => {
+      if (dragMode === 'playhead') {
+        if (!containerRef.current) return;
+        const rect = containerRef.current.getBoundingClientRect();
+        const x = e.clientX - rect.left + containerRef.current.scrollLeft - HEADER_WIDTH;
+        const time = Math.max(0, Math.min(pxToTime(x), comp.duration));
+        seek(time);
+        return;
+      }
+
       if (!dragClipId || !dragMode) return;
       const deltaPx = e.clientX - dragStartX;
       const deltaTime = pxToTime(deltaPx);
@@ -107,7 +123,7 @@ export default function Timeline() {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, dragClipId, dragMode, dragStartX, dragOrigStart, dragOrigDuration, pxToTime, snapEnabled, moveClip, resizeClip, comp]);
+  }, [isDragging, dragMode, dragClipId, dragStartX, dragOrigStart, dragOrigDuration, pxToTime, snapEnabled, moveClip, resizeClip, comp, seek]);
 
   const clipColor = (type: string) => {
     switch (type) {
@@ -128,6 +144,8 @@ export default function Timeline() {
     const ms = Math.floor((t % 1) * 100);
     return `${m}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
   };
+
+  const playheadLeft = timeToPx(currentTime);
 
   return (
     <div className="flex flex-col h-full bg-surface-900 border-t border-surface-600 select-none">
@@ -243,9 +261,18 @@ export default function Timeline() {
               </div>
             ))}
 
-            {/* Playhead */}
-            <div className="absolute top-0 bottom-0 w-px bg-red-500 z-30 pointer-events-none" style={{ left: timeToPx(currentTime) }}>
-              <div className="absolute -top-0.5 -translate-x-1/2 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-red-500" />
+            {/* Playhead — draggable */}
+            <div
+              className="absolute top-0 bottom-0 z-30 flex flex-col items-center"
+              style={{ left: playheadLeft, transform: 'translateX(-50%)', width: 16, cursor: 'ew-resize' }}
+              onMouseDown={onPlayheadMouseDown}
+            >
+              {/* Visible line */}
+              <div className="w-px h-full bg-red-500" />
+              {/* Triangle handle */}
+              <div className="absolute -top-0.5 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-red-500" />
+              {/* Wider invisible grab area */}
+              <div className="absolute top-0 bottom-0 w-4" />
             </div>
           </div>
         </div>
