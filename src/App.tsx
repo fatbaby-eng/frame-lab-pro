@@ -1,11 +1,11 @@
-import { AppProvider } from './context/AppContext';
-import Layout from './components/Layout';
+import { EditorProvider } from './editor/EditorContext';
+import EditorLayout from './editor/EditorLayout';
 
 function App() {
   return (
-    <AppProvider>
-      <Layout />
-    </AppProvider>
+    <EditorProvider>
+      <EditorLayout />
+    </EditorProvider>
   );
 }
 
