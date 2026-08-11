@@ -34,11 +34,6 @@ jobs:
         run: npm run build
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: github-pages
-          path: dist
-          overwrite: true
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
