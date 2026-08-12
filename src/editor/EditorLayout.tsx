@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { useEditor } from './EditorContext';
 import Timeline from './components/Timeline';
 import Preview from './components/Preview';
 import PropertiesPanel from './components/PropertiesPanel';
 import AssetPanel from './components/AssetPanel';
+import ExportDialog from './components/ExportDialog';
 import {
   Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight,
   Save, FolderOpen, Film, MousePointer2, PenTool,
@@ -11,6 +13,7 @@ import {
 export default function EditorLayout() {
   const { state, togglePlay, goToStart, goToEnd, stepFrame, setProjectName, showToast, setToolMode } = useEditor();
   const { currentTime, isPlaying, project, toolMode } = state;
+  const [exportOpen, setExportOpen] = useState(false);
 
   const comp = project.compositions.find(c => c.id === project.activeCompositionId)!;
 
@@ -96,7 +99,7 @@ export default function EditorLayout() {
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
           <span className="text-[10px] text-slate-500">{comp.width}×{comp.height} @ {comp.fps}fps</span>
-          <button onClick={() => showToast('Export coming soon')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent hover:bg-accent-dark text-white text-xs font-medium transition-colors">
+          <button onClick={() => setExportOpen(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent hover:bg-accent-dark text-white text-xs font-medium transition-colors">
             <Film size={13} />
             Export
           </button>
@@ -135,6 +138,9 @@ export default function EditorLayout() {
           {state.toast}
         </div>
       )}
+
+      {/* Export Dialog */}
+      <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} comp={comp} project={project} />
     </div>
   );
 }

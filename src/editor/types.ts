@@ -1,5 +1,5 @@
 // ============================================
-// Frame Lab Pro — Core Editor Types
+// Frame Lab — Core Editor Types
 // ============================================
 
 export type LayerType = 'video' | 'audio' | 'image' | 'text' | 'shape' | 'mesh3d' | 'effect' | 'path';
@@ -243,7 +243,7 @@ export function createNewClip(
     duration,
     sourceStart: 0,
     transform: makeTransform(),
-    textContent: type === 'text' ? 'Frame Lab Pro' : undefined,
+    textContent: type === 'text' ? 'Frame Lab' : undefined,
     textStyle: type === 'text' ? defaultTextStyle() : undefined,
     shapeType: type === 'shape' ? 'rect' : undefined,
     shapeColor: type === 'shape' ? '#6366f1' : undefined,
