@@ -2,9 +2,25 @@
 // Frame Lab Pro — Core Editor Types
 // ============================================
 
-export type LayerType = 'video' | 'audio' | 'image' | 'text' | 'shape' | 'mesh3d' | 'effect';
+export type LayerType = 'video' | 'audio' | 'image' | 'text' | 'shape' | 'mesh3d' | 'effect' | 'path';
 
 export type Easing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold';
+
+export type ToolMode = 'pointer' | 'pen';
+
+export interface PathPoint {
+  x: number;
+  y: number;
+  cpInX: number;   // incoming control point offset
+  cpInY: number;
+  cpOutX: number;  // outgoing control point offset
+  cpOutY: number;
+}
+
+export interface PathData {
+  points: PathPoint[];
+  closed: boolean;
+}
 
 export interface Keyframe<T = number> {
   time: number;       // seconds
@@ -118,6 +134,13 @@ export interface Clip {
   meshShape?: 'cube' | 'sphere' | 'torus' | 'dodecahedron' | 'icosahedron' | 'cone';
   meshColor?: string;
   meshWireframe?: boolean;
+  // Path
+  pathData?: PathData;
+  pathStrokeWidth?: number;
+  pathStrokeColor?: string;
+  pathFillColor?: string;
+  // Motion path (this clip follows another clip's path)
+  motionPathClipId?: string;
 }
 
 export interface TextStyle {
@@ -184,6 +207,7 @@ export function createDefaultComposition(): Composition {
       createTrack('text', 'Text', 2),
       createTrack('shape', 'Shapes', 3),
       createTrack('audio', 'Audio 1', 4),
+      createTrack('path', 'Paths', 5),
     ],
   };
 }
@@ -227,5 +251,156 @@ export function createNewClip(
     meshShape: type === 'mesh3d' ? 'torus' : undefined,
     meshColor: type === 'mesh3d' ? '#6366f1' : undefined,
     meshWireframe: type === 'mesh3d' ? false : undefined,
+    pathData: type === 'path' ? { points: [], closed: false } : undefined,
+    pathStrokeWidth: type === 'path' ? 3 : undefined,
+    pathStrokeColor: type === 'path' ? '#6366f1' : undefined,
+    pathFillColor: type === 'path' ? 'transparent' : undefined,
   };
+}
+
+// ============================================
+// Path Utilities
+// ============================================
+
+export function drawPath(ctx: CanvasRenderingContext2D, path: PathData, offsetX = 0, offsetY = 0) {
+  const pts = path.points;
+  if (pts.length < 2) return;
+
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x + offsetX, pts[0].y + offsetY);
+
+  for (let i = 1; i < pts.length; i++) {
+    const prev = pts[i - 1];
+    const curr = pts[i];
+    ctx.bezierCurveTo(
+      prev.x + prev.cpOutX + offsetX,
+      prev.y + prev.cpOutY + offsetY,
+      curr.x + curr.cpInX + offsetX,
+      curr.y + curr.cpInY + offsetY,
+      curr.x + offsetX,
+      curr.y + offsetY
+    );
+  }
+
+  if (path.closed && pts.length > 2) {
+    const last = pts[pts.length - 1];
+    const first = pts[0];
+    ctx.bezierCurveTo(
+      last.x + last.cpOutX + offsetX,
+      last.y + last.cpOutY + offsetY,
+      first.x + first.cpInX + offsetX,
+      first.y + first.cpInY + offsetY,
+      first.x + offsetX,
+      first.y + offsetY
+    );
+    ctx.closePath();
+  }
+}
+
+// Sample a path into small segments for arc-length parameterization
+function samplePath(path: PathData, segments = 200): { x: number; y: number; dist: number }[] {
+  const pts = path.points;
+  if (pts.length < 2) return [];
+
+  const samples: { x: number; y: number; dist: number }[] = [];
+  let totalDist = 0;
+
+  const addPoint = (x: number, y: number) => {
+    if (samples.length > 0) {
+      const last = samples[samples.length - 1];
+      totalDist += Math.sqrt((x - last.x) ** 2 + (y - last.y) ** 2);
+    }
+    samples.push({ x, y, dist: totalDist });
+  };
+
+  // For each segment between points, sample bezier curve
+  const numSegments = path.closed ? pts.length : pts.length - 1;
+  for (let i = 0; i < numSegments; i++) {
+    const curr = pts[i];
+    const next = pts[(i + 1) % pts.length];
+    const steps = Math.max(1, Math.floor(segments / numSegments));
+
+    for (let s = 0; s <= steps; s++) {
+      if (s === 0 && i > 0) continue; // avoid duplicate points
+      const t = s / steps;
+      const mt = 1 - t;
+      const x = mt ** 3 * curr.x + 3 * mt ** 2 * t * (curr.x + curr.cpOutX) + 3 * mt * t ** 2 * (next.x + next.cpInX) + t ** 3 * next.x;
+      const y = mt ** 3 * curr.y + 3 * mt ** 2 * t * (curr.y + curr.cpOutY) + 3 * mt * t ** 2 * (next.y + next.cpInY) + t ** 3 * next.y;
+      addPoint(x, y);
+    }
+  }
+
+  return samples;
+}
+
+// Get position on path at progress 0-1 using arc-length parameterization
+export function getPathPosition(path: PathData, progress: number): { x: number; y: number } | null {
+  const samples = samplePath(path);
+  if (samples.length === 0) return null;
+
+  const targetDist = progress * samples[samples.length - 1].dist;
+  // Binary search for the segment
+  let lo = 0, hi = samples.length - 1;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (samples[mid].dist < targetDist) lo = mid + 1;
+    else hi = mid;
+  }
+
+  const idx = Math.max(1, lo);
+  const a = samples[idx - 1];
+  const b = samples[idx];
+  const segLen = b.dist - a.dist;
+  const t = segLen > 0 ? (targetDist - a.dist) / segLen : 0;
+
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+  };
+}
+
+// Auto-smooth control points for a new point
+export function smoothControlPoints(points: PathPoint[], index: number) {
+  if (points.length < 2 || index < 0 || index >= points.length) return;
+  const pt = points[index];
+  const prev = points[index - 1];
+  const next = points[index + 1];
+
+  if (prev && next) {
+    // Smooth: cpOut points toward next, cpIn points toward prev
+    const dx = next.x - prev.x;
+    const dy = next.y - prev.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    const smoothLen = len * 0.2;
+    if (len > 0) {
+      pt.cpOutX = (dx / len) * smoothLen;
+      pt.cpOutY = (dy / len) * smoothLen;
+      pt.cpInX = -(dx / len) * smoothLen;
+      pt.cpInY = -(dy / len) * smoothLen;
+    }
+  } else if (prev) {
+    // Only previous: mirror previous cpOut
+    pt.cpInX = -prev.cpOutX;
+    pt.cpInY = -prev.cpOutY;
+    pt.cpOutX = prev.cpOutX;
+    pt.cpOutY = prev.cpOutY;
+  }
+}
+
+// Create a new path point with smooth handles
+export function createPathPoint(x: number, y: number, prevPoint?: PathPoint): PathPoint {
+  const pt: PathPoint = { x, y, cpInX: 0, cpInY: 0, cpOutX: 0, cpOutY: 0 };
+  if (prevPoint) {
+    const dx = x - prevPoint.x;
+    const dy = y - prevPoint.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    const handleLen = len * 0.3;
+    if (len > 0) {
+      pt.cpInX = -(dx / len) * handleLen;
+      pt.cpInY = -(dy / len) * handleLen;
+      pt.cpOutX = (dx / len) * handleLen;
+      pt.cpOutY = (dy / len) * handleLen;
+    }
+  }
+  return pt;
 }

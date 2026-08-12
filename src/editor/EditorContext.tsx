@@ -3,7 +3,7 @@ import {
   type ReactNode, useEffect,
 } from 'react';
 import type {
-  Project, Composition, Track, Clip, Asset, Transform, LayerType,
+  Project, Composition, Track, Clip, Asset, Transform, LayerType, ToolMode,
 } from './types';
 import {
   createDefaultComposition, createNewClip,
@@ -13,12 +13,13 @@ export interface EditorState {
   project: Project;
   currentTime: number;
   isPlaying: boolean;
-  zoom: number;           // pixels per second
+  zoom: number;
   selectedClipId: string | null;
   selectedTrackId: string | null;
   snapEnabled: boolean;
   showGrid: boolean;
   toast: string | null;
+  toolMode: ToolMode;
 }
 
 interface EditorContextType {
@@ -37,8 +38,10 @@ interface EditorContextType {
   // Selection
   selectClip: (id: string | null) => void;
   selectTrack: (id: string | null) => void;
+  // Tool mode
+  setToolMode: (mode: ToolMode) => void;
   // Clip operations
-  addClip: (trackId: string, type: LayerType, start: number, duration: number, assetId?: string) => void;
+  addClip: (trackId: string, type: LayerType, start: number, duration: number, assetId?: string) => string;
   deleteClip: (clipId: string) => void;
   moveClip: (clipId: string, newStart: number, newTrackId?: string) => void;
   resizeClip: (clipId: string, newStart: number, newDuration: number) => void;
@@ -87,6 +90,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     snapEnabled: true,
     showGrid: true,
     toast: null,
+    toolMode: 'pointer',
   }));
 
   const playRef = useRef<number>(0);
@@ -129,8 +133,6 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   const getActiveComposition = useCallback(() => {
     return getComp(state);
   }, [state.project]);
-
-
 
   // Playback controls
   const play = useCallback(() => {
@@ -196,17 +198,21 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     setState(s => ({ ...s, selectedTrackId: id, selectedClipId: null }));
   }, []);
 
+  // Tool mode
+  const setToolMode = useCallback((mode: ToolMode) => {
+    setState(s => ({ ...s, toolMode: mode }));
+  }, []);
+
   // Clip operations
-  const addClip = useCallback((trackId: string, type: LayerType, start: number, duration: number, assetId?: string) => {
-    setState(s => {
-      const clip = createNewClip(trackId, type, start, duration, assetId);
-      return updateComp(s, comp => ({
-        ...comp,
-        tracks: comp.tracks.map(t =>
-          t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t
-        ),
-      }));
-    });
+  const addClip = useCallback((trackId: string, type: LayerType, start: number, duration: number, assetId?: string): string => {
+    const clip = createNewClip(trackId, type, start, duration, assetId);
+    setState(s => updateComp(s, comp => ({
+      ...comp,
+      tracks: comp.tracks.map(t =>
+        t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t
+      ),
+    })));
+    return clip.id;
   }, []);
 
   const deleteClip = useCallback((clipId: string) => {
@@ -395,6 +401,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     play, pause, togglePlay, seek, stepFrame, goToStart, goToEnd,
     setZoom, setSnapEnabled,
     selectClip, selectTrack,
+    setToolMode,
     addClip, deleteClip, moveClip, resizeClip, updateClipTransform, updateClipProperty,
     toggleTrackVisibility, toggleTrackLock, toggleTrackMute, addTrack, deleteTrack,
     addAsset, deleteAsset,

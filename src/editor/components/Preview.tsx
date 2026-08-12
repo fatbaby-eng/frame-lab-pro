@@ -1,14 +1,15 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useEditor } from '../EditorContext';
-import { evalProp } from '../types';
+import { evalProp, drawPath } from '../types';
 import type { Clip, Asset } from '../types';
 import {
   Maximize2, Grid3X3, ZoomIn, ZoomOut,
 } from 'lucide-react';
+import PathEditor from './PathEditor';
 
 export default function Preview() {
   const { state, selectClip } = useEditor();
-  const { currentTime, project } = state;
+  const { currentTime, project, toolMode } = state;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -271,6 +272,19 @@ export default function Preview() {
         ctx.fillText('AUDIO', 0, 30);
         break;
       }
+      case 'path': {
+        if (clip.pathData && clip.pathData.points.length >= 2) {
+          ctx.strokeStyle = clip.pathStrokeColor || '#6366f1';
+          ctx.lineWidth = clip.pathStrokeWidth || 3;
+          ctx.fillStyle = clip.pathFillColor || 'transparent';
+          drawPath(ctx, clip.pathData);
+          if (clip.pathFillColor && clip.pathFillColor !== 'transparent') {
+            ctx.fill();
+          }
+          ctx.stroke();
+        }
+        break;
+      }
     }
 
     ctx.restore();
@@ -278,6 +292,9 @@ export default function Preview() {
 
   // Click-to-select on canvas
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Disable canvas click-to-select when pen tool is active
+    if (toolMode === 'pen') return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -342,7 +359,7 @@ export default function Preview() {
 
     // Clicked empty space — deselect
     selectClip(null);
-  }, [currentTime, comp, selectClip, getAsset]);
+  }, [currentTime, comp, selectClip, getAsset, toolMode]);
 
   return (
     <div className="flex flex-col h-full bg-surface-900 relative" ref={containerRef}>
@@ -384,7 +401,7 @@ export default function Preview() {
       </div>
 
       {/* Canvas container */}
-      <div className="flex-1 flex items-center justify-center overflow-auto p-4">
+      <div className="flex-1 flex items-center justify-center overflow-auto p-4 relative">
         <canvas
           ref={canvasRef}
           onClick={handleCanvasClick}
@@ -395,6 +412,7 @@ export default function Preview() {
           }}
           className="rounded-lg border border-surface-600 shadow-2xl"
         />
+        <PathEditor compWidth={comp.width} compHeight={comp.height} />
       </div>
     </div>
   );

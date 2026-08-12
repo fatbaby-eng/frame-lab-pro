@@ -5,12 +5,12 @@ import PropertiesPanel from './components/PropertiesPanel';
 import AssetPanel from './components/AssetPanel';
 import {
   Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight,
-  Save, FolderOpen, Film,
+  Save, FolderOpen, Film, MousePointer2, PenTool,
 } from 'lucide-react';
 
 export default function EditorLayout() {
-  const { state, togglePlay, goToStart, goToEnd, stepFrame, setProjectName, showToast } = useEditor();
-  const { currentTime, isPlaying, project } = state;
+  const { state, togglePlay, goToStart, goToEnd, stepFrame, setProjectName, showToast, setToolMode } = useEditor();
+  const { currentTime, isPlaying, project, toolMode } = state;
 
   const comp = project.compositions.find(c => c.id === project.activeCompositionId)!;
 
@@ -45,6 +45,24 @@ export default function EditorLayout() {
         <button onClick={() => showToast('Project loaded')} className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-surface-700 text-xs text-slate-300">
           <FolderOpen size={13} />
           Open
+        </button>
+
+        <div className="w-px h-5 bg-surface-600" />
+
+        {/* Tool Mode Toggle */}
+        <button
+          onClick={() => setToolMode('pointer')}
+          className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${toolMode === 'pointer' ? 'bg-accent text-white' : 'text-slate-400 hover:text-white hover:bg-surface-700'}`}
+          title="Pointer tool (V)"
+        >
+          <MousePointer2 size={14} />
+        </button>
+        <button
+          onClick={() => setToolMode('pen')}
+          className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${toolMode === 'pen' ? 'bg-accent text-white' : 'text-slate-400 hover:text-white hover:bg-surface-700'}`}
+          title="Pen tool (P)"
+        >
+          <PenTool size={14} />
         </button>
 
         <div className="w-px h-5 bg-surface-600" />

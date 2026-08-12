@@ -366,6 +366,67 @@ export default function PropertiesPanel() {
           </div>
         )}
 
+        {/* Path properties */}
+        {clip.type === 'path' && clip.pathData && (
+          <div className="border-b border-surface-700">
+            <div className="px-3 py-2 text-xs font-medium text-slate-300">Path</div>
+            <div className="px-3 pb-3 space-y-2">
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="text-[10px] text-slate-500 mb-1 block">Stroke</label>
+                  <input
+                    type="color"
+                    value={clip.pathStrokeColor || '#6366f1'}
+                    onChange={e => updateClipProperty(clip.id, 'pathStrokeColor', e.target.value)}
+                    className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="text-[10px] text-slate-500 mb-1 block">Fill</label>
+                  <input
+                    type="color"
+                    value={clip.pathFillColor === 'transparent' ? '#000000' : (clip.pathFillColor || '#000000')}
+                    onChange={e => updateClipProperty(clip.id, 'pathFillColor', e.target.value)}
+                    className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 mb-1 block">Stroke Width</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={20}
+                    step={0.5}
+                    value={clip.pathStrokeWidth || 3}
+                    onChange={e => updateClipProperty(clip.id, 'pathStrokeWidth', parseFloat(e.target.value))}
+                    className="flex-1 accent-accent h-4"
+                  />
+                  <span className="text-[10px] text-slate-300 w-8 text-right">{clip.pathStrokeWidth || 3}px</span>
+                </div>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={() => updateClipProperty(clip.id, 'pathData', { ...clip.pathData!, closed: !clip.pathData!.closed })}
+                  className="flex-1 px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-[10px] text-slate-300 border border-surface-600 transition-colors"
+                >
+                  {clip.pathData.closed ? 'Open Path' : 'Close Path'}
+                </button>
+                <button
+                  onClick={() => {
+                    updateClipProperty(clip.id, 'pathData', { points: [], closed: false });
+                    showToast('Path cleared');
+                  }}
+                  className="flex-1 px-2 py-1 rounded bg-surface-700 hover:bg-red-500/20 text-[10px] text-slate-300 hover:text-red-400 border border-surface-600 transition-colors"
+                >
+                  Clear Path
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Actions */}
         <div className="p-3">
           <button

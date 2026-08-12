@@ -132,6 +132,7 @@ export default function Timeline() {
       case 'image': return 'bg-purple-500/40 border-purple-400';
       case 'text': return 'bg-amber-500/40 border-amber-400';
       case 'shape': return 'bg-rose-500/40 border-rose-400';
+      case 'path': return 'bg-pink-500/40 border-pink-400';
       case 'mesh3d': return 'bg-cyan-500/40 border-cyan-400';
       case 'effect': return 'bg-orange-500/40 border-orange-400';
       default: return 'bg-slate-500/40 border-slate-400';
