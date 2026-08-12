@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useEditor } from '../EditorContext';
-import { evalProp, drawPath } from '../types';
+import { evalProp, drawPath, getPathPosition, getPathTangent } from '../types';
 import type { Clip, Asset } from '../types';
 import {
   Maximize2, Grid3X3, ZoomIn, ZoomOut,
@@ -131,12 +131,29 @@ export default function Preview() {
     const t = currentTime - clip.start;
 
     // Evaluate animated properties
-    const x = evalProp(clip.transform.x, t);
-    const y = evalProp(clip.transform.y, t);
+    let x = evalProp(clip.transform.x, t);
+    let y = evalProp(clip.transform.y, t);
     const scaleX = evalProp(clip.transform.scaleX, t);
     const scaleY = evalProp(clip.transform.scaleY, t);
-    const rotation = evalProp(clip.transform.rotation, t);
+    let rotation = evalProp(clip.transform.rotation, t);
     const opacity = evalProp(clip.transform.opacity, t);
+
+    // Motion path override
+    if (clip.motionPathClipId) {
+      const pathClip = comp.tracks.flatMap(tr => tr.clips).find(c => c.id === clip.motionPathClipId && c.type === 'path');
+      if (pathClip?.pathData && pathClip.pathData.points.length >= 2) {
+        const progress = Math.max(0, Math.min(t / clip.duration, 1));
+        const pos = getPathPosition(pathClip.pathData, progress);
+        const tangent = getPathTangent(pathClip.pathData, progress);
+        if (pos) {
+          x = pos.x - cw / 2; // convert from canvas coords to center-relative
+          y = pos.y - ch / 2;
+        }
+        if (tangent !== null) {
+          rotation += tangent;
+        }
+      }
+    }
 
     ctx.save();
     ctx.globalAlpha = opacity;
@@ -321,10 +338,23 @@ export default function Preview() {
 
     for (const clip of visibleClips) {
       const clipT = t - clip.start;
-      const cx = cw / 2 + evalProp(clip.transform.x, clipT);
-      const cy = ch / 2 + evalProp(clip.transform.y, clipT);
+      let cx = cw / 2 + evalProp(clip.transform.x, clipT);
+      let cy = ch / 2 + evalProp(clip.transform.y, clipT);
       const sx = evalProp(clip.transform.scaleX, clipT);
       const sy = evalProp(clip.transform.scaleY, clipT);
+
+      // Motion path override for hit testing
+      if (clip.motionPathClipId) {
+        const pathClip = comp.tracks.flatMap(tr => tr.clips).find(c => c.id === clip.motionPathClipId && c.type === 'path');
+        if (pathClip?.pathData && pathClip.pathData.points.length >= 2) {
+          const progress = Math.max(0, Math.min(clipT / clip.duration, 1));
+          const pos = getPathPosition(pathClip.pathData, progress);
+          if (pos) {
+            cx = pos.x;
+            cy = pos.y;
+          }
+        }
+      }
 
       // Approximate hit radius based on clip type
       let radius = 50;

@@ -359,6 +359,27 @@ export function getPathPosition(path: PathData, progress: number): { x: number; 
   };
 }
 
+// Get tangent angle (in degrees) at a given progress for auto-rotation
+export function getPathTangent(path: PathData, progress: number): number | null {
+  const samples = samplePath(path);
+  if (samples.length < 2) return null;
+
+  const targetDist = progress * samples[samples.length - 1].dist;
+  let lo = 0, hi = samples.length - 1;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (samples[mid].dist < targetDist) lo = mid + 1;
+    else hi = mid;
+  }
+
+  const idx = Math.min(lo, samples.length - 2);
+  const a = samples[idx];
+  const b = samples[idx + 1];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  return (Math.atan2(dy, dx) * 180) / Math.PI;
+}
+
 // Auto-smooth control points for a new point
 export function smoothControlPoints(points: PathPoint[], index: number) {
   if (points.length < 2 || index < 0 || index >= points.length) return;

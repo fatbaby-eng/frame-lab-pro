@@ -366,6 +366,38 @@ export default function PropertiesPanel() {
           </div>
         )}
 
+        {/* Motion Path */}
+        {clip.type !== 'path' && (
+          <div className="border-b border-surface-700">
+            <div className="px-3 py-2 text-xs font-medium text-slate-300">Motion Path</div>
+            <div className="px-3 pb-3 space-y-2">
+              <div>
+                <label className="text-[10px] text-slate-500 mb-1 block">Follow Path</label>
+                <select
+                  value={clip.motionPathClipId || ''}
+                  onChange={e => {
+                    const val = e.target.value;
+                    updateClipProperty(clip.id, 'motionPathClipId', val || undefined);
+                  }}
+                  className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none"
+                >
+                  <option value="">None</option>
+                  {comp.tracks.flatMap(t => t.clips)
+                    .filter(c => c.type === 'path' && c.pathData && c.pathData.points.length >= 2)
+                    .map(pathClip => (
+                      <option key={pathClip.id} value={pathClip.id}>{pathClip.name}</option>
+                    ))}
+                </select>
+              </div>
+              {clip.motionPathClipId && (
+                <p className="text-[10px] text-slate-500">
+                  Layer travels the full path over its duration.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Path properties */}
         {clip.type === 'path' && clip.pathData && (
           <div className="border-b border-surface-700">
