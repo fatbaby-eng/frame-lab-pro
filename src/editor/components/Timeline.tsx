@@ -20,6 +20,8 @@ export default function Timeline() {
   const timelineWidth = comp.duration * zoom;
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const headerScrollRef = useRef<HTMLDivElement>(null);
+
   const [isDragging, setIsDragging] = useState(false);
   const [dragMode, setDragMode] = useState<'move' | 'resize-left' | 'resize-right' | 'playhead' | null>(null);
   const [dragClipId, setDragClipId] = useState<string | null>(null);
@@ -44,6 +46,23 @@ export default function Timeline() {
     }
     return marks;
   }, [comp.duration, zoom]);
+
+  // Sync vertical scroll between track headers and tracks area
+  useEffect(() => {
+    const tracksEl = containerRef.current;
+    const headerEl = headerScrollRef.current;
+    if (!tracksEl || !headerEl) return;
+
+    const syncTracks = () => { tracksEl.scrollTop = headerEl.scrollTop; };
+    const syncHeader = () => { headerEl.scrollTop = tracksEl.scrollTop; };
+
+    headerEl.addEventListener('scroll', syncTracks);
+    tracksEl.addEventListener('scroll', syncHeader);
+    return () => {
+      headerEl.removeEventListener('scroll', syncTracks);
+      tracksEl.removeEventListener('scroll', syncHeader);
+    };
+  }, []);
 
   const handleTimelineClick = useCallback((e: React.MouseEvent) => {
     if (!containerRef.current) return;
@@ -189,7 +208,7 @@ export default function Timeline() {
         {/* Track headers */}
         <div className="w-40 bg-surface-800 border-r border-surface-600 flex flex-col shrink-0 overflow-hidden">
           <div className="h-8 border-b border-surface-600 shrink-0" />
-          <div className="flex-1 overflow-y-auto">
+          <div ref={headerScrollRef} className="flex-1 overflow-y-auto">
             {comp.tracks.map(track => (
               <div
                 key={track.id}
