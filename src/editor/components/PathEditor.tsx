@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useEditor } from '../EditorContext';
-import type { PathPoint, PathData } from '../types';
+import type { PathData } from '../types';
 import { createPathPoint } from '../types';
 
 type PenSubMode = 'idle' | 'drawing' | 'editing';
@@ -46,12 +46,12 @@ export default function PathEditor({ compWidth, compHeight }: { compWidth: numbe
       // Create a new path clip on the first path track
       const pathTrack = comp.tracks.find(t => t.type === 'path');
       if (!pathTrack) return;
-      const newClipId = addClip(pathTrack.id, 'path', currentTime, 5);
-      const newPath: PathData = {
-        points: [createPathPoint(pos.x, pos.y)],
-        closed: false,
-      };
-      updateClipProperty(newClipId, 'pathData', newPath);
+      const newClipId = addClip(pathTrack.id, 'path', currentTime, 5, undefined, undefined, {
+        pathData: {
+          points: [createPathPoint(pos.x, pos.y)],
+          closed: false,
+        },
+      });
       selectClip(newClipId);
       setPenSubMode('drawing');
       return;
@@ -172,7 +172,7 @@ export default function PathEditor({ compWidth, compHeight }: { compWidth: numbe
   return (
     <svg
       ref={svgRef}
-      className="absolute inset-0 z-40"
+      className="absolute inset-0 z-40 overflow-visible"
       viewBox={`0 0 ${compWidth} ${compHeight}`}
       style={{ width: '100%', height: '100%', cursor: 'crosshair' }}
       onClick={handleSvgClick}

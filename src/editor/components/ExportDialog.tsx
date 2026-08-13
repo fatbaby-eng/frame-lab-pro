@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Composition, Project } from '../types';
 import { exportToWebM, exportToGIF, downloadBlob } from '../export';
 import type { ExportFormat, ExportSettings, ExportProgress } from '../export';
-import { X, Film, Image, Download, Loader2 } from 'lucide-react';
+import { X, Film, Image as ImageIcon, Download, Loader2 } from 'lucide-react';
 
 interface ExportDialogProps {
   open: boolean;
@@ -126,7 +126,7 @@ export default function ExportDialog({ open, onClose, comp, project }: ExportDia
                 disabled={isRendering}
                 className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${format === 'gif' ? 'bg-accent/20 border-accent text-accent-light' : 'bg-surface-700 border-surface-600 text-slate-300 hover:border-slate-500'}`}
               >
-                <Image size={14} />
+                <ImageIcon size={14} />
                 GIF
               </button>
             </div>

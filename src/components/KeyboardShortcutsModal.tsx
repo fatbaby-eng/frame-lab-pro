@@ -29,7 +29,7 @@ export default function KeyboardShortcutsModal({ shortcuts, onClose }: KeyboardS
   };
 
   return (
-    <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center" onClick={onClose}>
       <div
         className="bg-surface-800 border border-surface-600 rounded-2xl w-[28rem] max-h-[80vh] flex flex-col shadow-2xl"
         onClick={e => e.stopPropagation()}

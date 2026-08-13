@@ -6,7 +6,15 @@ export type LayerType = 'video' | 'audio' | 'image' | 'text' | 'shape' | 'mesh3d
 
 export type Easing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold';
 
-export type ToolMode = 'pointer' | 'pen';
+export type ToolMode = 'pointer' | 'pen' | 'text' | 'shape';
+
+export type EffectType = 'blur' | 'brightness' | 'contrast' | 'saturate';
+
+export interface LayerEffect {
+  id: string;
+  type: EffectType;
+  amount: number; // blur: px; others: 0–200 where 100 = unchanged
+}
 
 export interface PathPoint {
   x: number;
@@ -39,6 +47,8 @@ export interface Transform {
   scaleY: AnimatedProperty;
   rotation: AnimatedProperty;  // degrees
   opacity: AnimatedProperty;   // 0-1
+  anchorX: AnimatedProperty;   // pixels from layer center
+  anchorY: AnimatedProperty;
 }
 
 export function makeAnimatedProperty(initialValue: number): AnimatedProperty {
@@ -61,7 +71,52 @@ export function makeTransform(
     scaleY: makeAnimatedProperty(scale),
     rotation: makeAnimatedProperty(rotation),
     opacity: makeAnimatedProperty(opacity),
+    anchorX: makeAnimatedProperty(0),
+    anchorY: makeAnimatedProperty(0),
   };
+}
+
+const KF_EPS = 1 / 120;
+
+export function hasKeyframeAt(prop: AnimatedProperty, time: number, eps = KF_EPS): boolean {
+  return prop.keyframes.some(k => Math.abs(k.time - time) < eps);
+}
+
+export function setKeyframe(
+  prop: AnimatedProperty,
+  time: number,
+  value: number,
+  easing: Easing = 'ease-in-out'
+): AnimatedProperty {
+  const keyframes = prop.keyframes.map(k => ({ ...k }));
+  const idx = keyframes.findIndex(k => Math.abs(k.time - time) < KF_EPS);
+  if (idx >= 0) {
+    keyframes[idx] = { ...keyframes[idx], value, easing };
+  } else {
+    keyframes.push({ time: Math.max(0, time), value, easing });
+    keyframes.sort((a, b) => a.time - b.time);
+  }
+  return { keyframes };
+}
+
+export function removeKeyframe(prop: AnimatedProperty, time: number): AnimatedProperty {
+  const keyframes = prop.keyframes.filter(k => Math.abs(k.time - time) >= KF_EPS);
+  if (keyframes.length === 0) {
+    const nearest = prop.keyframes.reduce((a, b) =>
+      Math.abs(a.time - time) < Math.abs(b.time - time) ? a : b
+    );
+    return { keyframes: [{ ...nearest, time: 0 }] };
+  }
+  return { keyframes };
+}
+
+export function easingAt(prop: AnimatedProperty, time: number): Easing {
+  const kf = prop.keyframes.find(k => Math.abs(k.time - time) < KF_EPS);
+  if (kf) return kf.easing;
+  for (let i = prop.keyframes.length - 1; i >= 0; i--) {
+    if (prop.keyframes[i].time <= time) return prop.keyframes[i].easing;
+  }
+  return prop.keyframes[0]?.easing ?? 'linear';
 }
 
 // Evaluate an animated property at a given time
@@ -90,6 +145,45 @@ export function evalProp(prop: AnimatedProperty, time: number): number {
   const eased = applyEasing(t, after.easing);
   return before.value + (after.value - before.value) * eased;
 }
+
+export interface WorldTransform {
+  x: number;
+  y: number;
+  scaleX: number;
+  scaleY: number;
+  rotation: number;
+  opacity: number;
+  anchorX: number;
+  anchorY: number;
+}
+
+export function evalTransform(transform: Transform, time: number): WorldTransform {
+  return {
+    x: evalProp(transform.x, time),
+    y: evalProp(transform.y, time),
+    scaleX: evalProp(transform.scaleX, time),
+    scaleY: evalProp(transform.scaleY, time),
+    rotation: evalProp(transform.rotation, time),
+    opacity: evalProp(transform.opacity, time),
+    anchorX: transform.anchorX ? evalProp(transform.anchorX, time) : 0,
+    anchorY: transform.anchorY ? evalProp(transform.anchorY, time) : 0,
+  };
+}
+
+export function findClip(comp: Composition, clipId: string): Clip | undefined {
+  for (const track of comp.tracks) {
+    const clip = track.clips.find(c => c.id === clipId);
+    if (clip) return clip;
+  }
+  return undefined;
+}
+
+export const COMP_PRESETS = [
+  { name: 'Landscape 1080p', width: 1920, height: 1080, fps: 30 },
+  { name: 'Landscape 720p', width: 1280, height: 720, fps: 30 },
+  { name: 'Square 1080', width: 1080, height: 1080, fps: 30 },
+  { name: 'Portrait 1080', width: 1080, height: 1920, fps: 30 },
+] as const;
 
 function applyEasing(t: number, easing: Easing): number {
   switch (easing) {
@@ -141,6 +235,10 @@ export interface Clip {
   pathFillColor?: string;
   // Motion path (this clip follows another clip's path)
   motionPathClipId?: string;
+  // Parenting — child's transform is relative to parent
+  parentId?: string;
+  // Raster effects applied at render time
+  effects?: LayerEffect[];
 }
 
 export interface TextStyle {
@@ -182,6 +280,9 @@ export interface Composition {
   height: number;
   fps: number;
   duration: number;    // total composition duration
+  backgroundColor: string;
+  workAreaStart: number;
+  workAreaEnd: number;
   tracks: Track[];
 }
 
@@ -194,21 +295,72 @@ export interface Project {
 }
 
 export function createDefaultComposition(): Composition {
+  const tracks = [
+    createTrack('video', 'Video 1', 0),
+    createTrack('video', 'Video 2', 1),
+    createTrack('text', 'Text', 2),
+    createTrack('shape', 'Shapes', 3),
+    createTrack('mesh3d', '3D', 4),
+    createTrack('audio', 'Audio 1', 5),
+    createTrack('path', 'Paths', 6),
+  ];
+
+  const textClip = createNewClip(tracks[2].id, 'text', 0, 10);
+  textClip.name = 'Title';
+  textClip.textContent = 'FRAME LAB';
+  textClip.textStyle = {
+    ...defaultTextStyle(),
+    fontSize: 96,
+    bold: true,
+    color: '#ffffff',
+  };
+  textClip.transform.opacity = {
+    keyframes: [
+      { time: 0, value: 0, easing: 'ease-out' },
+      { time: 0.8, value: 1, easing: 'linear' },
+    ],
+  };
+  textClip.transform.scaleX = {
+    keyframes: [
+      { time: 0, value: 0.85, easing: 'ease-out' },
+      { time: 0.8, value: 1, easing: 'linear' },
+    ],
+  };
+  textClip.transform.scaleY = {
+    keyframes: [
+      { time: 0, value: 0.85, easing: 'ease-out' },
+      { time: 0.8, value: 1, easing: 'linear' },
+    ],
+  };
+  tracks[2].clips.push(textClip);
+
+  const shapeClip = createNewClip(tracks[3].id, 'shape', 0, 10);
+  shapeClip.name = 'Accent';
+  shapeClip.shapeType = 'circle';
+  shapeClip.shapeColor = '#6366f1';
+  shapeClip.transform.y = makeAnimatedProperty(180);
+  shapeClip.transform.scaleX = makeAnimatedProperty(0.7);
+  shapeClip.transform.scaleY = makeAnimatedProperty(0.7);
+  shapeClip.transform.x = {
+    keyframes: [
+      { time: 0, value: -420, easing: 'ease-in-out' },
+      { time: 5, value: 420, easing: 'ease-in-out' },
+      { time: 10, value: -420, easing: 'ease-in-out' },
+    ],
+  };
+  tracks[3].clips.push(shapeClip);
+
   return {
     id: `comp-${Date.now()}`,
     name: 'Composition 1',
     width: 1920,
     height: 1080,
     fps: 30,
-    duration: 30,
-    tracks: [
-      createTrack('video', 'Video 1', 0),
-      createTrack('video', 'Video 2', 1),
-      createTrack('text', 'Text', 2),
-      createTrack('shape', 'Shapes', 3),
-      createTrack('audio', 'Audio 1', 4),
-      createTrack('path', 'Paths', 5),
-    ],
+    duration: 10,
+    backgroundColor: '#0a0a0f',
+    workAreaStart: 0,
+    workAreaEnd: 10,
+    tracks,
   };
 }
 

@@ -3,7 +3,7 @@ import { useEditor } from '../EditorContext';
 import type { Asset, LayerType } from '../types';
 import {
   Upload, Image, Video, Music, FileText, Box, Trash2, Plus,
-  Film,
+  Film, PenTool,
 } from 'lucide-react';
 
 const typeIcons: Record<LayerType, typeof Image> = {
@@ -14,10 +14,11 @@ const typeIcons: Record<LayerType, typeof Image> = {
   shape: Film,
   mesh3d: Box,
   effect: Film,
+  path: PenTool,
 };
 
 export default function AssetPanel() {
-  const { state, addAsset, deleteAsset, addClip, showToast } = useEditor();
+  const { state, addAsset, deleteAsset, addClip, showToast, updateAsset } = useEditor();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -38,29 +39,26 @@ export default function AssetPanel() {
         url,
       };
 
-      // For video, try to get dimensions and duration
       if (type === 'video') {
         const video = document.createElement('video');
         video.preload = 'metadata';
         video.onloadedmetadata = () => {
-          asset.duration = video.duration;
-          asset.width = video.videoWidth;
-          asset.height = video.videoHeight;
+          updateAsset(asset.id, {
+            duration: video.duration,
+            width: video.videoWidth,
+            height: video.videoHeight,
+          });
         };
         video.src = url;
       }
 
-      // For image, get dimensions
       if (type === 'image') {
         const img = document.createElement('img');
         img.onload = () => {
-          asset.width = img.naturalWidth;
-          asset.height = img.naturalHeight;
-        };
-        img.src = url;
-        img.onload = () => {
-          asset.width = img.naturalWidth;
-          asset.height = img.naturalHeight;
+          updateAsset(asset.id, {
+            width: img.naturalWidth,
+            height: img.naturalHeight,
+          });
         };
         img.src = url;
       }
@@ -70,7 +68,7 @@ export default function AssetPanel() {
 
     showToast(`Imported ${files.length} file(s)`);
     e.target.value = '';
-  }, [addAsset, showToast]);
+  }, [addAsset, showToast, updateAsset]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -155,8 +153,8 @@ export default function AssetPanel() {
       {/* Quick Add Layers */}
       <div className="p-3 border-b border-surface-600">
         <label className="text-[10px] text-slate-500 uppercase tracking-wider mb-2 block">Add Layer</label>
-        <div className="grid grid-cols-3 gap-1">
-          {(['text', 'shape', 'mesh3d'] as LayerType[]).map(type => {
+        <div className="grid grid-cols-4 gap-1">
+          {(['text', 'shape', 'mesh3d', 'path'] as LayerType[]).map(type => {
             const Icon = typeIcons[type];
             return (
               <button
@@ -165,7 +163,7 @@ export default function AssetPanel() {
                 className="flex flex-col items-center gap-1 p-1.5 rounded bg-surface-700 hover:bg-surface-600 text-slate-400 hover:text-white transition-colors text-[9px]"
               >
                 <Icon size={14} />
-                <span className="capitalize">{type === 'mesh3d' ? '3D' : type}</span>
+                <span className="capitalize">{type === 'mesh3d' ? '3D' : type === 'path' ? 'Path' : type}</span>
               </button>
             );
           })}

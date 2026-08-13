@@ -24,7 +24,8 @@ export function useKeyboardShortcuts(
     if (e.ctrlKey || e.metaKey) pressed.push('ctrl');
     if (e.altKey) pressed.push('alt');
     if (e.shiftKey) pressed.push('shift');
-    pressed.push(e.key.toLowerCase());
+    const keyName = e.key === ' ' ? 'space' : e.key.toLowerCase();
+    pressed.push(keyName);
     const combo = pressed.join('+');
 
     // Global help toggle: ? or Shift+/

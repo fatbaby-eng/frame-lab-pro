@@ -1,30 +1,43 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useEditor } from '../EditorContext';
-import { evalProp, drawPath, getPathPosition, getPathTangent } from '../types';
-import type { Clip, Asset } from '../types';
+import { evalProp, makeTransform, findClip } from '../types';
+import type { Clip } from '../types';
+import { renderFrame, resolveClipTransform, clipHitRadius } from '../render';
 import {
-  Maximize2, Grid3X3, ZoomIn, ZoomOut,
+  Maximize2, Grid3X3, ZoomIn, ZoomOut, Scan,
 } from 'lucide-react';
 import PathEditor from './PathEditor';
 
 export default function Preview() {
-  const { state, selectClip } = useEditor();
-  const { currentTime, project, toolMode } = state;
+  const {
+    state, selectClip, addClip, updateClipProperty, setToolMode,
+    setTransformValues, setShowGrid,
+  } = useEditor();
+  const { currentTime, project, toolMode, selectedClipId, showGrid } = state;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
 
   const comp = project.compositions.find(c => c.id === project.activeCompositionId)!;
-  const [previewScale, setPreviewScale] = useState(0.5);
-  const [showGridOverlay, setShowGridOverlay] = useState(true);
+  const [previewScale, setPreviewScale] = useState(0.35);
 
-  // Asset cache
+  const [editingClipId, setEditingClipId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+  const editInputRef = useRef<HTMLInputElement>(null);
+
+  const dragRef = useRef<{
+    clipId: string;
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+  } | null>(null);
+
   const assetCache = useRef<Map<string, HTMLImageElement | HTMLVideoElement>>(new Map());
 
-  // Load assets into cache
   useEffect(() => {
     project.assets.forEach(asset => {
       if (assetCache.current.has(asset.id)) return;
-
       if (asset.type === 'video') {
         const video = document.createElement('video');
         video.src = asset.url;
@@ -40,410 +53,282 @@ export default function Preview() {
     });
   }, [project.assets]);
 
-  // Find asset by ID
-  const getAsset = useCallback((id: string): Asset | undefined => {
+  const getAsset = useCallback((id: string) => {
     return project.assets.find(a => a.id === id);
   }, [project.assets]);
 
-  // Main render loop
+  useEffect(() => {
+    if (editingClipId && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingClipId]);
+
+  const fitToView = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const pad = 48;
+    const sx = (el.clientWidth - pad) / comp.width;
+    const sy = (el.clientHeight - pad) / comp.height;
+    setPreviewScale(Math.max(0.08, Math.min(sx, sy, 2)));
+  }, [comp.width, comp.height]);
+
+  useEffect(() => {
+    fitToView();
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => fitToView());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fitToView]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Set canvas size to composition size
     canvas.width = comp.width;
     canvas.height = comp.height;
 
-    // Clear
-    ctx.fillStyle = '#0a0a0f';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Draw grid if enabled
-    if (showGridOverlay) {
-      ctx.strokeStyle = '#1e1e2e';
-      ctx.lineWidth = 1;
-      const gridSize = 50;
-      for (let x = 0; x < canvas.width; x += gridSize) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-      }
-      for (let y = 0; y < canvas.height; y += gridSize) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-      }
-      // Center crosshair
-      ctx.strokeStyle = '#6366f122';
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(canvas.width / 2, 0); ctx.lineTo(canvas.width / 2, canvas.height); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, canvas.height / 2); ctx.lineTo(canvas.width, canvas.height / 2); ctx.stroke();
-    }
-
-    // Safe zones
-    ctx.strokeStyle = '#ffffff10';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([5, 5]);
-    const safeMargin = 0.05;
-    ctx.strokeRect(
-      canvas.width * safeMargin,
-      canvas.height * safeMargin,
-      canvas.width * (1 - safeMargin * 2),
-      canvas.height * (1 - safeMargin * 2)
-    );
-    ctx.setLineDash([]);
-
-    // Render clips from bottom to top (tracks are ordered bottom-up)
-    // We iterate in reverse so top tracks render last
-    const visibleClips: { clip: Clip; trackIndex: number }[] = [];
-
-    for (let ti = comp.tracks.length - 1; ti >= 0; ti--) {
-      const track = comp.tracks[ti];
+    for (const track of comp.tracks) {
       if (!track.visible) continue;
-
       for (const clip of track.clips) {
-        if (currentTime >= clip.start && currentTime < clip.start + clip.duration) {
-          visibleClips.push({ clip, trackIndex: ti });
+        if (clip.type !== 'video' || !clip.assetId) continue;
+        if (currentTime < clip.start || currentTime >= clip.start + clip.duration) continue;
+        const video = assetCache.current.get(clip.assetId) as HTMLVideoElement | undefined;
+        if (!video) continue;
+        const sourceTime = clip.sourceStart + (currentTime - clip.start);
+        if (Math.abs(video.currentTime - sourceTime) > 0.04) {
+          video.currentTime = sourceTime;
         }
       }
     }
 
-    // Sort by track index so lower tracks render first
-    visibleClips.sort((a, b) => b.trackIndex - a.trackIndex);
+    renderFrame(ctx, currentTime, comp, project, assetCache.current, {
+      showGrid,
+      showSafeZones: true,
+      selectedClipId: toolMode === 'pen' ? null : selectedClipId,
+    });
+  }, [currentTime, comp, project, showGrid, selectedClipId, toolMode]);
 
-    for (const { clip } of visibleClips) {
-      renderClip(ctx, clip, canvas.width, canvas.height);
-    }
-
-    // Timecode overlay
-    ctx.fillStyle = '#ffffffaa';
-    ctx.font = '14px monospace';
-    const m = Math.floor(currentTime / 60);
-    const s = Math.floor(currentTime % 60);
-    const f = Math.floor((currentTime % 1) * comp.fps);
-    ctx.fillText(`${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}:${f.toString().padStart(2, '0')}`, 12, canvas.height - 12);
-
-    // Resolution overlay
-    ctx.fillStyle = '#ffffff55';
-    ctx.font = '11px monospace';
-    ctx.fillText(`${comp.width}×${comp.height} @ ${comp.fps}fps`, 12, 22);
-  }, [currentTime, comp, showGridOverlay, project.assets]);
-
-  function renderClip(ctx: CanvasRenderingContext2D, clip: Clip, cw: number, ch: number) {
-    const t = currentTime - clip.start;
-
-    // Evaluate animated properties
-    let x = evalProp(clip.transform.x, t);
-    let y = evalProp(clip.transform.y, t);
-    const scaleX = evalProp(clip.transform.scaleX, t);
-    const scaleY = evalProp(clip.transform.scaleY, t);
-    let rotation = evalProp(clip.transform.rotation, t);
-    const opacity = evalProp(clip.transform.opacity, t);
-
-    // Motion path override
-    if (clip.motionPathClipId) {
-      const pathClip = comp.tracks.flatMap(tr => tr.clips).find(c => c.id === clip.motionPathClipId && c.type === 'path');
-      if (pathClip?.pathData && pathClip.pathData.points.length >= 2) {
-        const progress = Math.max(0, Math.min(t / clip.duration, 1));
-        const pos = getPathPosition(pathClip.pathData, progress);
-        const tangent = getPathTangent(pathClip.pathData, progress);
-        if (pos) {
-          x = pos.x - cw / 2; // convert from canvas coords to center-relative
-          y = pos.y - ch / 2;
-        }
-        if (tangent !== null) {
-          rotation += tangent;
-        }
-      }
-    }
-
-    ctx.save();
-    ctx.globalAlpha = opacity;
-    ctx.translate(cw / 2 + x, ch / 2 + y);
-    ctx.rotate((rotation * Math.PI) / 180);
-    ctx.scale(scaleX, scaleY);
-
-    switch (clip.type) {
-      case 'video': {
-        if (clip.assetId) {
-          const video = assetCache.current.get(clip.assetId) as HTMLVideoElement | undefined;
-          if (video && video.readyState >= 2) {
-            const asset = getAsset(clip.assetId);
-            const sourceTime = clip.sourceStart + t;
-            if (video.currentTime !== sourceTime && sourceTime < (asset?.duration || Infinity)) {
-              video.currentTime = sourceTime;
-            }
-            const w = asset?.width || video.videoWidth || cw;
-            const h = asset?.height || video.videoHeight || ch;
-            ctx.drawImage(video, -w / 2, -h / 2, w, h);
-          }
-        }
-        break;
-      }
-      case 'image': {
-        if (clip.assetId) {
-          const img = assetCache.current.get(clip.assetId) as HTMLImageElement | undefined;
-          if (img && img.complete) {
-            const asset = getAsset(clip.assetId);
-            const w = asset?.width || img.naturalWidth || 400;
-            const h = asset?.height || img.naturalHeight || 300;
-            ctx.drawImage(img, -w / 2, -h / 2, w, h);
-          }
-        }
-        break;
-      }
-      case 'text': {
-        if (clip.textContent && clip.textStyle) {
-          const style = clip.textStyle;
-          ctx.font = `${style.bold ? 'bold ' : ''}${style.italic ? 'italic ' : ''}${style.fontSize}px ${style.fontFamily}`;
-          ctx.fillStyle = style.color;
-          ctx.textAlign = style.align;
-          ctx.textBaseline = 'middle';
-          ctx.fillText(clip.textContent, 0, 0);
-        }
-        break;
-      }
-      case 'shape': {
-        const shapeColor = clip.shapeColor || '#6366f1';
-        const strokeWidth = clip.shapeStroke || 0;
-        const size = 100;
-
-        ctx.fillStyle = shapeColor;
-        ctx.strokeStyle = shapeColor;
-        ctx.lineWidth = strokeWidth;
-
-        switch (clip.shapeType) {
-          case 'rect':
-            ctx.fillRect(-size / 2, -size / 2, size, size);
-            break;
-          case 'circle':
-            ctx.beginPath();
-            ctx.arc(0, 0, size / 2, 0, Math.PI * 2);
-            ctx.fill();
-            break;
-          case 'triangle':
-            ctx.beginPath();
-            ctx.moveTo(0, -size / 2);
-            ctx.lineTo(size / 2, size / 2);
-            ctx.lineTo(-size / 2, size / 2);
-            ctx.closePath();
-            ctx.fill();
-            break;
-          case 'star': {
-            ctx.beginPath();
-            for (let i = 0; i < 10; i++) {
-              const r = i % 2 === 0 ? size / 2 : size / 4;
-              const angle = (i * Math.PI) / 5 - Math.PI / 2;
-              if (i === 0) ctx.moveTo(Math.cos(angle) * r, Math.sin(angle) * r);
-              else ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r);
-            }
-            ctx.closePath();
-            ctx.fill();
-            break;
-          }
-        }
-        if (strokeWidth > 0) ctx.stroke();
-        break;
-      }
-      case 'mesh3d': {
-        // Draw a placeholder shape for 3D mesh layers
-        ctx.fillStyle = clip.meshColor || '#6366f1';
-        ctx.strokeStyle = '#ffffff66';
-        ctx.lineWidth = 2;
-        const s = 80;
-        ctx.beginPath();
-        ctx.moveTo(-s / 2, -s / 2);
-        ctx.lineTo(s / 2, -s / 2);
-        ctx.lineTo(s / 2, s / 2);
-        ctx.lineTo(-s / 2, s / 2);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        // Wireframe overlay
-        if (clip.meshWireframe) {
-          ctx.strokeStyle = '#ffffffaa';
-          ctx.beginPath();
-          ctx.moveTo(-s / 2, -s / 2); ctx.lineTo(s / 2, s / 2);
-          ctx.moveTo(s / 2, -s / 2); ctx.lineTo(-s / 2, s / 2);
-          ctx.stroke();
-        }
-        ctx.fillStyle = '#ffffff';
-        ctx.font = '10px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText('3D: ' + (clip.meshShape || 'mesh'), 0, s / 2 + 16);
-        break;
-      }
-      case 'audio': {
-        // Draw audio visualization bar
-        const barCount = 20;
-        const barW = 6;
-        const gap = 3;
-        const totalW = barCount * (barW + gap);
-        ctx.fillStyle = '#22c55e88';
-        for (let i = 0; i < barCount; i++) {
-          const h = 10 + Math.sin(currentTime * 10 + i * 0.5) * 20 + Math.random() * 10;
-          const bx = -totalW / 2 + i * (barW + gap);
-          ctx.fillRect(bx, -h / 2, barW, h);
-        }
-        ctx.fillStyle = '#22c55e';
-        ctx.font = '10px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText('AUDIO', 0, 30);
-        break;
-      }
-      case 'path': {
-        if (clip.pathData && clip.pathData.points.length >= 2) {
-          ctx.strokeStyle = clip.pathStrokeColor || '#6366f1';
-          ctx.lineWidth = clip.pathStrokeWidth || 3;
-          ctx.fillStyle = clip.pathFillColor || 'transparent';
-          drawPath(ctx, clip.pathData);
-          if (clip.pathFillColor && clip.pathFillColor !== 'transparent') {
-            ctx.fill();
-          }
-          ctx.stroke();
-        }
-        break;
-      }
-    }
-
-    ctx.restore();
-  }
-
-  // Click-to-select on canvas
-  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    // Disable canvas click-to-select when pen tool is active
-    if (toolMode === 'pen') return;
-
+  const canvasToComp = useCallback((e: { clientX: number; clientY: number }) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const clickX = (e.clientX - rect.left) * scaleX;
-    const clickY = (e.clientY - rect.top) * scaleY;
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  }, []);
 
+  const hitTest = useCallback((clickX: number, clickY: number): Clip | null => {
     const t = currentTime;
-    const cw = canvas.width;
-    const ch = canvas.height;
-
-    // Find visible clips at current time, topmost first
-    const visibleClips: Clip[] = [];
-    for (let ti = comp.tracks.length - 1; ti >= 0; ti--) {
+    const cw = comp.width;
+    const ch = comp.height;
+    const visible: Clip[] = [];
+    for (let ti = 0; ti < comp.tracks.length; ti++) {
       const track = comp.tracks[ti];
-      if (!track.visible) continue;
+      if (!track.visible || track.locked) continue;
       for (const clip of track.clips) {
-        if (t >= clip.start && t < clip.start + clip.duration) {
-          visibleClips.push(clip);
-        }
+        if (t >= clip.start && t < clip.start + clip.duration) visible.push(clip);
       }
     }
+    for (let i = visible.length - 1; i >= 0; i--) {
+      const clip = visible[i];
+      const xf = resolveClipTransform(clip, t, cw, ch, comp);
+      const cx = cw / 2 + xf.x;
+      const cy = ch / 2 + xf.y;
+      const radius = clipHitRadius(clip, getAsset) * Math.max(xf.scaleX, xf.scaleY);
+      const dist = Math.hypot(clickX - cx, clickY - cy);
+      if (dist <= radius) return clip;
+    }
+    return null;
+  }, [currentTime, comp, getAsset]);
 
-    for (const clip of visibleClips) {
-      const clipT = t - clip.start;
-      let cx = cw / 2 + evalProp(clip.transform.x, clipT);
-      let cy = ch / 2 + evalProp(clip.transform.y, clipT);
-      const sx = evalProp(clip.transform.scaleX, clipT);
-      const sy = evalProp(clip.transform.scaleY, clipT);
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (toolMode === 'pen') return;
+    const { x: clickX, y: clickY } = canvasToComp(e);
 
-      // Motion path override for hit testing
-      if (clip.motionPathClipId) {
-        const pathClip = comp.tracks.flatMap(tr => tr.clips).find(c => c.id === clip.motionPathClipId && c.type === 'path');
-        if (pathClip?.pathData && pathClip.pathData.points.length >= 2) {
-          const progress = Math.max(0, Math.min(clipT / clip.duration, 1));
-          const pos = getPathPosition(pathClip.pathData, progress);
-          if (pos) {
-            cx = pos.x;
-            cy = pos.y;
-          }
-        }
-      }
-
-      // Approximate hit radius based on clip type
-      let radius = 50;
-      switch (clip.type) {
-        case 'text':
-          radius = Math.max((clip.textContent?.length || 5) * (clip.textStyle?.fontSize || 48) * 0.3, 30);
-          break;
-        case 'shape':
-          radius = 50;
-          break;
-        case 'mesh3d':
-          radius = 40;
-          break;
-        case 'audio':
-          radius = 70;
-          break;
-        case 'video':
-        case 'image': {
-          const asset = clip.assetId ? getAsset(clip.assetId) : null;
-          radius = Math.max(asset?.width || 400, asset?.height || 300) / 2;
-          break;
-        }
-      }
-      radius *= Math.max(sx, sy);
-
-      const dist = Math.sqrt((clickX - cx) ** 2 + (clickY - cy) ** 2);
-      if (dist <= radius) {
-        selectClip(clip.id);
-        return;
-      }
+    if (toolMode === 'text') {
+      const centerRelativeX = clickX - comp.width / 2;
+      const centerRelativeY = clickY - comp.height / 2;
+      const textTrack = comp.tracks.find(t => t.type === 'text' && !t.locked)
+        ?? comp.tracks.find(t => t.type === 'text');
+      if (!textTrack) return;
+      const transform = makeTransform(centerRelativeX, centerRelativeY);
+      const clipId = addClip(textTrack.id, 'text', currentTime, 5, undefined, transform);
+      selectClip(clipId);
+      setEditingClipId(clipId);
+      setEditValue('Frame Lab');
+      setToolMode('pointer');
+      return;
     }
 
-    // Clicked empty space — deselect
-    selectClip(null);
-  }, [currentTime, comp, selectClip, getAsset, toolMode]);
+    if (toolMode === 'shape') {
+      const centerRelativeX = clickX - comp.width / 2;
+      const centerRelativeY = clickY - comp.height / 2;
+      const shapeTrack = comp.tracks.find(t => t.type === 'shape' && !t.locked)
+        ?? comp.tracks.find(t => t.type === 'shape');
+      if (!shapeTrack) return;
+      const transform = makeTransform(centerRelativeX, centerRelativeY);
+      const clipId = addClip(shapeTrack.id, 'shape', currentTime, 5, undefined, transform);
+      selectClip(clipId);
+      setToolMode('pointer');
+      return;
+    }
+
+    const hit = hitTest(clickX, clickY);
+    if (hit) {
+      selectClip(hit.id);
+      const t = currentTime - hit.start;
+      dragRef.current = {
+        clipId: hit.id,
+        startX: clickX,
+        startY: clickY,
+        origX: evalProp(hit.transform.x, t),
+        origY: evalProp(hit.transform.y, t),
+      };
+    } else {
+      selectClip(null);
+    }
+  }, [toolMode, canvasToComp, comp, currentTime, addClip, selectClip, setToolMode, hitTest]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragRef.current) return;
+      const { x, y } = canvasToComp(e);
+      const dx = x - dragRef.current.startX;
+      const dy = y - dragRef.current.startY;
+      setTransformValues(dragRef.current.clipId, {
+        x: dragRef.current.origX + dx,
+        y: dragRef.current.origY + dy,
+      });
+    };
+    const onUp = () => { dragRef.current = null; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [canvasToComp, setTransformValues]);
+
+  const getEditInputPosition = useCallback(() => {
+    if (!editingClipId || !canvasRef.current) return null;
+    const clip = findClip(comp, editingClipId);
+    if (!clip) return null;
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const xf = resolveClipTransform(clip, currentTime, comp.width, comp.height, comp);
+    const canvasX = comp.width / 2 + xf.x;
+    const canvasY = comp.height / 2 + xf.y;
+    const screenX = rect.left + canvasX * (rect.width / comp.width);
+    const screenY = rect.top + canvasY * (rect.height / comp.height);
+    const fontSize = (clip.textStyle?.fontSize || 48) * (rect.width / comp.width);
+    return { left: screenX, top: screenY, fontSize };
+  }, [editingClipId, comp, currentTime]);
+
+  const editPos = getEditInputPosition();
+
+  const handleEditChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setEditValue(val);
+    if (editingClipId) updateClipProperty(editingClipId, 'textContent', val);
+  };
+
+  const finishEditing = () => {
+    setEditingClipId(null);
+    setEditValue('');
+  };
+
+  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' || e.key === 'Escape') finishEditing();
+  };
+
+  const cursor =
+    toolMode === 'text' || toolMode === 'shape' || toolMode === 'pen' ? 'crosshair'
+    : 'default';
 
   return (
     <div className="flex flex-col h-full bg-surface-900 relative" ref={containerRef}>
-      {/* Toolbar */}
       <div className="h-8 bg-surface-800 border-b border-surface-600 flex items-center px-3 gap-2 shrink-0">
         <span className="text-[10px] text-slate-500 font-mono">{comp.width}×{comp.height}</span>
         <div className="w-px h-4 bg-surface-600" />
-        <button
-          onClick={() => setPreviewScale(s => Math.max(0.1, s - 0.1))}
-          className="text-slate-400 hover:text-white"
-        >
+        <button onClick={() => setPreviewScale(s => Math.max(0.08, s - 0.08))} className="text-slate-400 hover:text-white" title="Zoom out">
           <ZoomOut size={14} />
         </button>
         <span className="text-[10px] text-slate-500 w-10 text-center">{Math.round(previewScale * 100)}%</span>
-        <button
-          onClick={() => setPreviewScale(s => Math.min(2, s + 0.1))}
-          className="text-slate-400 hover:text-white"
-        >
+        <button onClick={() => setPreviewScale(s => Math.min(2, s + 0.08))} className="text-slate-400 hover:text-white" title="Zoom in">
           <ZoomIn size={14} />
+        </button>
+        <button onClick={fitToView} className="text-slate-400 hover:text-white" title="Fit composition">
+          <Scan size={13} />
         </button>
         <div className="w-px h-4 bg-surface-600" />
         <button
-          onClick={() => setShowGridOverlay(!showGridOverlay)}
-          className={`text-xs px-1.5 py-0.5 rounded ${showGridOverlay ? 'bg-accent/20 text-accent-light' : 'text-slate-500'}`}
+          onClick={() => setShowGrid(!showGrid)}
+          className={`text-xs px-1.5 py-0.5 rounded ${showGrid ? 'bg-accent/20 text-accent-light' : 'text-slate-500'}`}
+          title="Toggle grid"
         >
           <Grid3X3 size={12} />
         </button>
         <div className="ml-auto" />
         <button
-          onClick={() => {
-            if (containerRef.current?.requestFullscreen) {
-              containerRef.current.requestFullscreen();
-            }
-          }}
+          onClick={() => { containerRef.current?.requestFullscreen?.(); }}
           className="text-slate-400 hover:text-white"
+          title="Fullscreen"
         >
           <Maximize2 size={14} />
         </button>
       </div>
 
-      {/* Canvas container */}
-      <div className="flex-1 flex items-center justify-center overflow-auto p-4 relative">
-        <canvas
-          ref={canvasRef}
-          onClick={handleCanvasClick}
+      <div className="flex-1 flex items-center justify-center overflow-auto p-4">
+        <div
+          ref={stageRef}
+          className="relative shrink-0"
           style={{
             width: comp.width * previewScale,
             height: comp.height * previewScale,
-            imageRendering: 'auto',
           }}
-          className="rounded-lg border border-surface-600 shadow-2xl"
-        />
-        <PathEditor compWidth={comp.width} compHeight={comp.height} />
+        >
+          <canvas
+            ref={canvasRef}
+            onMouseDown={handleMouseDown}
+            style={{
+              width: '100%',
+              height: '100%',
+              imageRendering: 'auto',
+              cursor,
+            }}
+            className="rounded-lg border border-surface-600 shadow-2xl block"
+          />
+          <PathEditor compWidth={comp.width} compHeight={comp.height} />
+        </div>
       </div>
+
+      {editingClipId && editPos && (
+        <input
+          ref={editInputRef}
+          type="text"
+          value={editValue}
+          onChange={handleEditChange}
+          onBlur={finishEditing}
+          onKeyDown={handleEditKeyDown}
+          className="fixed z-50 bg-transparent text-white outline-none border-none px-0 py-0 whitespace-nowrap"
+          style={{
+            left: editPos.left,
+            top: editPos.top,
+            fontSize: `${editPos.fontSize}px`,
+            fontFamily: 'Inter, sans-serif',
+            lineHeight: 1,
+            transform: 'translate(-50%, -50%)',
+            minWidth: '20px',
+            textShadow: '0 0 4px rgba(0,0,0,0.8)',
+          }}
+          spellCheck={false}
+        />
+      )}
     </div>
   );
 }
