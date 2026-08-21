@@ -2,6 +2,7 @@ import {
   evalTransform, drawPath, getPathPosition, getPathTangent, findClip,
 } from './types';
 import type { Clip, Composition, Project, Asset, WorldTransform, LayerEffect } from './types';
+import { renderMeshLayer, MESH_SPRITE } from './mesh3d';
 
 export interface RenderOptions {
   showGrid?: boolean;
@@ -36,7 +37,7 @@ export function renderFrame(
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ch); ctx.stroke();
     }
     for (let y = 0; y < ch; y += gridSize) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, ch); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke();
     }
     ctx.strokeStyle = '#6366f122';
     ctx.beginPath(); ctx.moveTo(cw / 2, 0); ctx.lineTo(cw / 2, ch); ctx.stroke();
@@ -52,10 +53,12 @@ export function renderFrame(
     ctx.setLineDash([]);
   }
 
+  const anySolo = comp.tracks.some(t => t.solo);
   const visibleClips: { clip: Clip; trackIndex: number }[] = [];
   for (let ti = comp.tracks.length - 1; ti >= 0; ti--) {
     const track = comp.tracks[ti];
     if (!track.visible) continue;
+    if (anySolo && !track.solo) continue;
     for (const clip of track.clips) {
       if (time >= clip.start && time < clip.start + clip.duration) {
         visibleClips.push({ clip, trackIndex: ti });
@@ -73,7 +76,7 @@ export function renderFrame(
   if (selectedClipId) {
     const selected = visibleClips.find(v => v.clip.id === selectedClipId);
     if (selected) {
-      drawSelection(ctx, selected.clip, time, cw, ch, comp);
+      drawSelection(ctx, selected.clip, time, cw, ch, comp, getAsset);
     }
   }
 }
@@ -129,26 +132,82 @@ export function resolveClipTransform(
   return local;
 }
 
-export function clipHitRadius(clip: Clip, getAsset: (id: string) => Asset | undefined): number {
+export function clipLocalSize(clip: Clip, getAsset?: (id: string) => Asset | undefined): { w: number; h: number } {
   switch (clip.type) {
-    case 'text':
-      return Math.max((clip.textContent?.length || 5) * (clip.textStyle?.fontSize || 48) * 0.28, 36);
+    case 'text': {
+      const fs = clip.textStyle?.fontSize || 48;
+      const len = Math.max(clip.textContent?.length || 1, 1);
+      return { w: Math.max(len * fs * 0.56, fs), h: fs * 1.25 };
+    }
     case 'shape':
-      return 55;
+      return { w: 100, h: 100 };
     case 'mesh3d':
-      return 50;
-    case 'audio':
-      return 70;
-    case 'path':
-      return 40;
+      return { w: MESH_SPRITE, h: MESH_SPRITE };
     case 'video':
     case 'image': {
-      const asset = clip.assetId ? getAsset(clip.assetId) : null;
-      return Math.max(asset?.width || 400, asset?.height || 300) / 2;
+      const asset = clip.assetId && getAsset ? getAsset(clip.assetId) : null;
+      return { w: asset?.width || 400, h: asset?.height || 300 };
     }
     default:
-      return 50;
+      return { w: 80, h: 80 };
   }
+}
+
+export interface SelectionBox {
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
+  rotation: number;
+  corners: { id: 'nw' | 'ne' | 'sw' | 'se'; x: number; y: number }[];
+  rotateHandle: { x: number; y: number };
+}
+
+export function getSelectionBox(
+  clip: Clip,
+  time: number,
+  cw: number,
+  ch: number,
+  comp: Composition,
+  getAsset?: (id: string) => Asset | undefined
+): SelectionBox {
+  const xf = resolveClipTransform(clip, time, cw, ch, comp);
+  const { w: lw, h: lh } = clipLocalSize(clip, getAsset);
+  const w = Math.max(24, lw * Math.abs(xf.scaleX));
+  const h = Math.max(24, lh * Math.abs(xf.scaleY));
+  const cx = cw / 2 + xf.x;
+  const cy = ch / 2 + xf.y;
+  const rad = (xf.rotation * Math.PI) / 180;
+  const rot = (x: number, y: number) => ({
+    x: cx + x * Math.cos(rad) - y * Math.sin(rad),
+    y: cy + x * Math.sin(rad) + y * Math.cos(rad),
+  });
+  const hw = w / 2;
+  const hh = h / 2;
+  return {
+    cx, cy, w, h, rotation: xf.rotation,
+    corners: [
+      { id: 'nw', ...rot(-hw, -hh) },
+      { id: 'ne', ...rot(hw, -hh) },
+      { id: 'sw', ...rot(-hw, hh) },
+      { id: 'se', ...rot(hw, hh) },
+    ],
+    rotateHandle: rot(0, -hh - 28),
+  };
+}
+
+export function pointInSelection(px: number, py: number, box: SelectionBox): boolean {
+  const rad = (-box.rotation * Math.PI) / 180;
+  const dx = px - box.cx;
+  const dy = py - box.cy;
+  const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+  const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+  return Math.abs(lx) <= box.w / 2 && Math.abs(ly) <= box.h / 2;
+}
+
+export function clipHitRadius(clip: Clip, getAsset: (id: string) => Asset | undefined): number {
+  const { w, h } = clipLocalSize(clip, getAsset);
+  return Math.hypot(w, h) / 2;
 }
 
 function applyEffects(ctx: CanvasRenderingContext2D, effects?: LayerEffect[]) {
@@ -268,22 +327,14 @@ function renderClip(
       break;
     }
     case 'mesh3d': {
-      drawMeshPlaceholder(ctx, clip.meshShape || 'cube', clip.meshColor || '#6366f1', !!clip.meshWireframe);
-      break;
-    }
-    case 'audio': {
-      const barCount = 20;
-      const barW = 6;
-      const gap = 3;
-      const totalW = barCount * (barW + gap);
-      ctx.fillStyle = '#22c55e88';
-      for (let i = 0; i < barCount; i++) {
-        const h = 10 + Math.sin(currentTime * 10 + i * 0.5) * 20;
-        const bx = -totalW / 2 + i * (barW + gap);
-        ctx.fillRect(bx, -h / 2, barW, h);
+      const sprite = renderMeshLayer(clip, currentTime - clip.start);
+      if (sprite) {
+        ctx.drawImage(sprite, -MESH_SPRITE / 2, -MESH_SPRITE / 2, MESH_SPRITE, MESH_SPRITE);
       }
       break;
     }
+    case 'audio':
+      break;
     case 'path': {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalAlpha = xf.opacity;
@@ -309,93 +360,37 @@ function drawSelection(
   time: number,
   cw: number,
   ch: number,
-  comp: Composition
+  comp: Composition,
+  getAsset?: (id: string) => Asset | undefined
 ) {
-  const xf = resolveClipTransform(clip, time, cw, ch, comp);
-  const cx = cw / 2 + xf.x;
-  const cy = ch / 2 + xf.y;
-  const size = 110 * Math.max(xf.scaleX, xf.scaleY);
+  if (clip.type === 'path' || clip.type === 'audio') return;
+  const box = getSelectionBox(clip, time, cw, ch, comp, getAsset);
   ctx.save();
+  ctx.translate(box.cx, box.cy);
+  ctx.rotate((box.rotation * Math.PI) / 180);
   ctx.strokeStyle = '#818cf8';
   ctx.lineWidth = 1.5;
-  ctx.setLineDash([6, 4]);
-  ctx.strokeRect(cx - size / 2, cy - size / 2, size, size);
+  ctx.setLineDash([5, 4]);
+  ctx.strokeRect(-box.w / 2, -box.h / 2, box.w, box.h);
   ctx.setLineDash([]);
-  ctx.fillStyle = '#818cf8';
-  const hs = 5;
-  for (const [hx, hy] of [
-    [cx - size / 2, cy - size / 2],
-    [cx + size / 2, cy - size / 2],
-    [cx - size / 2, cy + size / 2],
-    [cx + size / 2, cy + size / 2],
-  ] as const) {
-    ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
-  }
+  ctx.beginPath();
+  ctx.moveTo(0, -box.h / 2);
+  ctx.lineTo(0, -box.h / 2 - 28);
+  ctx.stroke();
   ctx.restore();
-}
 
-function drawMeshPlaceholder(
-  ctx: CanvasRenderingContext2D,
-  shape: string,
-  color: string,
-  wireframe: boolean
-) {
-  ctx.fillStyle = color;
-  ctx.strokeStyle = wireframe ? '#ffffffcc' : '#ffffff66';
+  ctx.fillStyle = '#1e1b4b';
+  ctx.strokeStyle = '#818cf8';
   ctx.lineWidth = 1.5;
-  const s = 70;
-
-  if (shape === 'sphere') {
+  for (const c of box.corners) {
     ctx.beginPath();
-    ctx.ellipse(0, 0, s / 2, s / 2, 0, 0, Math.PI * 2);
-    if (!wireframe) ctx.fill();
+    ctx.rect(c.x - 4, c.y - 4, 8, 8);
+    ctx.fill();
     ctx.stroke();
-    ctx.beginPath();
-    ctx.ellipse(0, 0, s / 2, s / 6, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    return;
   }
-
-  if (shape === 'cone') {
-    ctx.beginPath();
-    ctx.moveTo(0, -s / 2);
-    ctx.lineTo(s / 2, s / 2);
-    ctx.lineTo(-s / 2, s / 2);
-    ctx.closePath();
-    if (!wireframe) ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.ellipse(0, s / 2, s / 2, 10, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    return;
-  }
-
-  if (shape === 'torus') {
-    ctx.beginPath();
-    ctx.ellipse(0, 0, s / 2, s / 3, 0, 0, Math.PI * 2);
-    if (!wireframe) ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.ellipse(0, 0, s / 4, s / 6, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    return;
-  }
-
-  const dx = 28;
-  const dy = 16;
   ctx.beginPath();
-  ctx.moveTo(0, -s / 2);
-  ctx.lineTo(dx, -s / 2 + dy);
-  ctx.lineTo(dx, s / 2 - dy);
-  ctx.lineTo(0, s / 2);
-  ctx.lineTo(-dx, s / 2 - dy);
-  ctx.lineTo(-dx, -s / 2 + dy);
-  ctx.closePath();
-  if (!wireframe) ctx.fill();
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(0, -s / 2); ctx.lineTo(0, s / 2);
-  ctx.moveTo(0, -s / 2); ctx.lineTo(dx, -s / 2 + dy);
-  ctx.moveTo(0, -s / 2); ctx.lineTo(-dx, -s / 2 + dy);
+  ctx.arc(box.rotateHandle.x, box.rotateHandle.y, 5, 0, Math.PI * 2);
+  ctx.fill();
   ctx.stroke();
 }
+

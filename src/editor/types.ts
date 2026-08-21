@@ -4,7 +4,7 @@
 
 export type LayerType = 'video' | 'audio' | 'image' | 'text' | 'shape' | 'mesh3d' | 'effect' | 'path';
 
-export type Easing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold';
+export type Easing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold' | 'bezier';
 
 export type ToolMode = 'pointer' | 'pen' | 'text' | 'shape';
 
@@ -31,13 +31,32 @@ export interface PathData {
 }
 
 export interface Keyframe<T = number> {
+  id?: string;
   time: number;       // seconds
   value: T;
   easing: Easing;
+  /** Outgoing / incoming cubic-bezier in unit time (X) and eased progress (Y). */
+  bx1?: number;
+  by1?: number;
+  bx2?: number;
+  by2?: number;
 }
 
 export interface AnimatedProperty {
   keyframes: Keyframe[];
+  /** Stopwatch on — keys are shown and interpolated even if only one exists. */
+  enabled?: boolean;
+}
+
+export function newKeyframeId(): string {
+  return `kf-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function hydrateAnimatedProperty(prop: AnimatedProperty): AnimatedProperty {
+  return {
+    enabled: prop.enabled ?? prop.keyframes.length > 1,
+    keyframes: prop.keyframes.map(k => ({ ...k, id: k.id || newKeyframeId() })),
+  };
 }
 
 export interface Transform {
@@ -53,7 +72,8 @@ export interface Transform {
 
 export function makeAnimatedProperty(initialValue: number): AnimatedProperty {
   return {
-    keyframes: [{ time: 0, value: initialValue, easing: 'linear' }],
+    enabled: false,
+    keyframes: [{ id: newKeyframeId(), time: 0, value: initialValue, easing: 'linear' }],
   };
 }
 
@@ -88,15 +108,27 @@ export function setKeyframe(
   value: number,
   easing: Easing = 'ease-in-out'
 ): AnimatedProperty {
-  const keyframes = prop.keyframes.map(k => ({ ...k }));
+  const keyframes = prop.keyframes.map(k => ({ ...k, id: k.id || newKeyframeId() }));
   const idx = keyframes.findIndex(k => Math.abs(k.time - time) < KF_EPS);
+  const [bx1, by1, bx2, by2] = easingToBezier(easing);
   if (idx >= 0) {
-    keyframes[idx] = { ...keyframes[idx], value, easing };
+    keyframes[idx] = { ...keyframes[idx], value, easing, bx1, by1, bx2, by2 };
   } else {
-    keyframes.push({ time: Math.max(0, time), value, easing });
+    keyframes.push({ id: newKeyframeId(), time: Math.max(0, time), value, easing, bx1, by1, bx2, by2 });
     keyframes.sort((a, b) => a.time - b.time);
   }
-  return { keyframes };
+  return { keyframes, enabled: true };
+}
+
+export function moveKeyframe(prop: AnimatedProperty, fromTime: number, toTime: number): AnimatedProperty {
+  const idx = prop.keyframes.findIndex(k => Math.abs(k.time - fromTime) < KF_EPS);
+  if (idx < 0) return prop;
+  const nextTime = Math.max(0, toTime);
+  const moving = { ...prop.keyframes[idx], time: nextTime };
+  const rest = prop.keyframes.filter((k, i) => i !== idx && Math.abs(k.time - nextTime) >= KF_EPS);
+  rest.push(moving);
+  rest.sort((a, b) => a.time - b.time);
+  return { keyframes: rest, enabled: prop.enabled ?? rest.length > 1 };
 }
 
 export function removeKeyframe(prop: AnimatedProperty, time: number): AnimatedProperty {
@@ -105,9 +137,9 @@ export function removeKeyframe(prop: AnimatedProperty, time: number): AnimatedPr
     const nearest = prop.keyframes.reduce((a, b) =>
       Math.abs(a.time - time) < Math.abs(b.time - time) ? a : b
     );
-    return { keyframes: [{ ...nearest, time: 0 }] };
+    return { keyframes: [{ ...nearest, time: 0, id: nearest.id || newKeyframeId() }], enabled: false };
   }
-  return { keyframes };
+  return { keyframes, enabled: prop.enabled ?? keyframes.length > 1 };
 }
 
 export function easingAt(prop: AnimatedProperty, time: number): Easing {
@@ -140,10 +172,65 @@ export function evalProp(prop: AnimatedProperty, time: number): number {
   if (time <= before.time) return before.value;
   if (time >= after.time) return after.value;
 
-  // Interpolate
+  // Interpolate using the outgoing curve on the earlier key
   const t = (time - before.time) / (after.time - before.time);
-  const eased = applyEasing(t, after.easing);
+  if (before.easing === 'hold') return before.value;
+  const [x1, y1, x2, y2] = keyframeBezier(before);
+  const eased = cubicBezierY(t, x1, y1, x2, y2);
   return before.value + (after.value - before.value) * eased;
+}
+
+export function easingToBezier(easing: Easing): [number, number, number, number] {
+  switch (easing) {
+    case 'linear': return [0, 0, 1, 1];
+    case 'ease-in': return [0.42, 0, 1, 1];
+    case 'ease-out': return [0, 0, 0.58, 1];
+    case 'ease-in-out': return [0.42, 0, 0.58, 1];
+    case 'bezier': return [0.42, 0, 0.58, 1];
+    case 'hold': return [0, 0, 0, 0];
+    default: return [0, 0, 1, 1];
+  }
+}
+
+export function keyframeBezier(kf: Keyframe): [number, number, number, number] {
+  if (kf.easing === 'bezier' || kf.bx1 != null || kf.bx2 != null) {
+    return [
+      kf.bx1 ?? 0.42,
+      kf.by1 ?? 0,
+      kf.bx2 ?? 0.58,
+      kf.by2 ?? 1,
+    ];
+  }
+  return easingToBezier(kf.easing);
+}
+
+export function applyBezierToKeyframe(kf: Keyframe, easing: Easing): Keyframe {
+  const [bx1, by1, bx2, by2] = easingToBezier(easing);
+  return { ...kf, easing, bx1, by1, bx2, by2 };
+}
+
+/** Solve cubic-bezier Y for a given time T in 0–1 (CSS-style). */
+export function cubicBezierY(t: number, x1: number, y1: number, x2: number, y2: number): number {
+  const clamped = Math.max(0, Math.min(1, t));
+  let s = clamped;
+  for (let i = 0; i < 10; i++) {
+    const x = bezierCoord(s, x1, x2) - clamped;
+    const dx = bezierDeriv(s, x1, x2);
+    if (Math.abs(x) < 1e-6) break;
+    if (Math.abs(dx) < 1e-6) break;
+    s = Math.max(0, Math.min(1, s - x / dx));
+  }
+  return bezierCoord(s, y1, y2);
+}
+
+function bezierCoord(s: number, p1: number, p2: number): number {
+  const mt = 1 - s;
+  return 3 * mt * mt * s * p1 + 3 * mt * s * s * p2 + s * s * s;
+}
+
+function bezierDeriv(s: number, p1: number, p2: number): number {
+  const mt = 1 - s;
+  return 3 * mt * mt * p1 + 6 * mt * s * (p2 - p1) + 3 * s * s * (1 - p2);
 }
 
 export interface WorldTransform {
@@ -178,23 +265,25 @@ export function findClip(comp: Composition, clipId: string): Clip | undefined {
   return undefined;
 }
 
+/** True if parenting `clipId` to `parentId` would create a cycle. */
+export function wouldCreateParentCycle(comp: Composition, clipId: string, parentId: string): boolean {
+  if (clipId === parentId) return true;
+  let cur: string | undefined = parentId;
+  const seen = new Set<string>();
+  while (cur && !seen.has(cur)) {
+    if (cur === clipId) return true;
+    seen.add(cur);
+    cur = findClip(comp, cur)?.parentId;
+  }
+  return false;
+}
+
 export const COMP_PRESETS = [
   { name: 'Landscape 1080p', width: 1920, height: 1080, fps: 30 },
   { name: 'Landscape 720p', width: 1280, height: 720, fps: 30 },
   { name: 'Square 1080', width: 1080, height: 1080, fps: 30 },
   { name: 'Portrait 1080', width: 1080, height: 1920, fps: 30 },
 ] as const;
-
-function applyEasing(t: number, easing: Easing): number {
-  switch (easing) {
-    case 'linear': return t;
-    case 'ease-in': return t * t;
-    case 'ease-out': return 1 - (1 - t) * (1 - t);
-    case 'ease-in-out': return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-    case 'hold': return 0;
-    default: return t;
-  }
-}
 
 export interface Asset {
   id: string;
@@ -205,6 +294,8 @@ export interface Asset {
   width?: number;       // for images/video
   height?: number;
   thumbnail?: string;
+  /** Normalized 0–1 peak samples for timeline waveforms. */
+  peaks?: number[];
 }
 
 export interface Clip {
@@ -228,6 +319,9 @@ export interface Clip {
   meshShape?: 'cube' | 'sphere' | 'torus' | 'dodecahedron' | 'icosahedron' | 'cone';
   meshColor?: string;
   meshWireframe?: boolean;
+  meshRotX?: AnimatedProperty;
+  meshRotY?: AnimatedProperty;
+  meshRotZ?: AnimatedProperty;
   // Path
   pathData?: PathData;
   pathStrokeWidth?: number;
@@ -268,9 +362,42 @@ export interface Track {
   visible: boolean;
   locked: boolean;
   muted: boolean;
+  solo: boolean;
   clips: Clip[];
-  // For audio/video tracks: volume
   volume: number;
+}
+
+export const TRANSFORM_PROP_KEYS: (keyof Transform)[] = [
+  'x', 'y', 'scaleX', 'scaleY', 'rotation', 'opacity', 'anchorX', 'anchorY',
+];
+
+export function isAnimated(prop: AnimatedProperty | undefined): boolean {
+  return !!prop && (prop.keyframes.length > 1 || !!prop.enabled);
+}
+
+export function snapToTimes(time: number, targets: number[], threshold: number): number {
+  let best = time;
+  let bestDist = threshold;
+  for (const target of targets) {
+    if (target == null || Number.isNaN(target)) continue;
+    const d = Math.abs(time - target);
+    if (d < bestDist) {
+      bestDist = d;
+      best = target;
+    }
+  }
+  return best;
+}
+
+export function collectSnapTimes(comp: Composition, playhead: number, excludeClipId?: string): number[] {
+  const times = [0, comp.duration, playhead, comp.workAreaStart ?? 0, comp.workAreaEnd ?? comp.duration];
+  for (const track of comp.tracks) {
+    for (const clip of track.clips) {
+      if (clip.id === excludeClipId) continue;
+      times.push(clip.start, clip.start + clip.duration);
+    }
+  }
+  return times;
 }
 
 export interface Composition {
@@ -314,24 +441,24 @@ export function createDefaultComposition(): Composition {
     bold: true,
     color: '#ffffff',
   };
-  textClip.transform.opacity = {
+  textClip.transform.opacity = hydrateAnimatedProperty({
     keyframes: [
       { time: 0, value: 0, easing: 'ease-out' },
       { time: 0.8, value: 1, easing: 'linear' },
     ],
-  };
-  textClip.transform.scaleX = {
+  });
+  textClip.transform.scaleX = hydrateAnimatedProperty({
     keyframes: [
       { time: 0, value: 0.85, easing: 'ease-out' },
       { time: 0.8, value: 1, easing: 'linear' },
     ],
-  };
-  textClip.transform.scaleY = {
+  });
+  textClip.transform.scaleY = hydrateAnimatedProperty({
     keyframes: [
       { time: 0, value: 0.85, easing: 'ease-out' },
       { time: 0.8, value: 1, easing: 'linear' },
     ],
-  };
+  });
   tracks[2].clips.push(textClip);
 
   const shapeClip = createNewClip(tracks[3].id, 'shape', 0, 10);
@@ -341,14 +468,30 @@ export function createDefaultComposition(): Composition {
   shapeClip.transform.y = makeAnimatedProperty(180);
   shapeClip.transform.scaleX = makeAnimatedProperty(0.7);
   shapeClip.transform.scaleY = makeAnimatedProperty(0.7);
-  shapeClip.transform.x = {
+  shapeClip.transform.x = hydrateAnimatedProperty({
     keyframes: [
       { time: 0, value: -420, easing: 'ease-in-out' },
       { time: 5, value: 420, easing: 'ease-in-out' },
       { time: 10, value: -420, easing: 'ease-in-out' },
     ],
-  };
+  });
   tracks[3].clips.push(shapeClip);
+
+  const meshClip = createNewClip(tracks[4].id, 'mesh3d', 0, 10);
+  meshClip.name = 'Orb';
+  meshClip.meshShape = 'torus';
+  meshClip.meshColor = '#818cf8';
+  meshClip.transform.y = makeAnimatedProperty(-40);
+  meshClip.transform.scaleX = makeAnimatedProperty(2.2);
+  meshClip.transform.scaleY = makeAnimatedProperty(2.2);
+  meshClip.meshRotX = makeAnimatedProperty(22);
+  meshClip.meshRotY = hydrateAnimatedProperty({
+    keyframes: [
+      { time: 0, value: 0, easing: 'linear', bx1: 0, by1: 0, bx2: 1, by2: 1 },
+      { time: 10, value: 360, easing: 'linear', bx1: 0, by1: 0, bx2: 1, by2: 1 },
+    ],
+  });
+  tracks[4].clips.push(meshClip);
 
   return {
     id: `comp-${Date.now()}`,
@@ -372,6 +515,7 @@ function createTrack(type: LayerType, name: string, index: number): Track {
     visible: true,
     locked: false,
     muted: false,
+    solo: false,
     clips: [],
     volume: 1,
   };
@@ -403,6 +547,9 @@ export function createNewClip(
     meshShape: type === 'mesh3d' ? 'torus' : undefined,
     meshColor: type === 'mesh3d' ? '#6366f1' : undefined,
     meshWireframe: type === 'mesh3d' ? false : undefined,
+    meshRotX: type === 'mesh3d' ? makeAnimatedProperty(18) : undefined,
+    meshRotY: type === 'mesh3d' ? makeAnimatedProperty(0) : undefined,
+    meshRotZ: type === 'mesh3d' ? makeAnimatedProperty(0) : undefined,
     pathData: type === 'path' ? { points: [], closed: false } : undefined,
     pathStrokeWidth: type === 'path' ? 3 : undefined,
     pathStrokeColor: type === 'path' ? '#6366f1' : undefined,

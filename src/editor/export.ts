@@ -1,5 +1,6 @@
 import { renderFrame } from './render';
 import type { Composition, Project } from './types';
+import { createExportAudioTrack } from './audioEngine';
 
 export type ExportFormat = 'webm' | 'gif';
 
@@ -47,8 +48,12 @@ export async function exportToWebM(
   canvas.height = comp.height;
   const ctx = canvas.getContext('2d', { alpha: false })!;
 
-  // Set up MediaRecorder
-  const stream = canvas.captureStream(fps);
+  const canvasStream = canvas.captureStream(fps);
+  const audioTrack = await createExportAudioTrack(comp, project, startTime, endTime);
+  const stream = new MediaStream([
+    ...canvasStream.getVideoTracks(),
+    ...(audioTrack ? [audioTrack] : []),
+  ]);
   const bitrate = QUALITY_BITRATES[settings.quality];
   const options: MediaRecorderOptions = {
     mimeType: 'video/webm;codecs=vp9',
@@ -92,21 +97,18 @@ export async function exportToWebM(
 
       const time = startTime + frame / fps;
 
-      // Seek video assets to correct time
-      seekVideoAssets(time, comp, assetCache);
-
-      // Render frame
-      renderFrame(ctx, time, comp, project, assetCache);
-
-      onProgress({
-        frame,
-        totalFrames,
-        time,
-        status: 'rendering',
-      });
-
-      frame++;
-      setTimeout(renderNext, frameInterval);
+      void (async () => {
+        await seekVideoAssets(time, comp, assetCache);
+        renderFrame(ctx, time, comp, project, assetCache);
+        onProgress({
+          frame,
+          totalFrames,
+          time,
+          status: 'rendering',
+        });
+        frame++;
+        setTimeout(renderNext, frameInterval);
+      })();
     };
 
     // Small delay to let MediaRecorder initialize
@@ -127,7 +129,7 @@ export async function exportToGIF(
 ): Promise<Blob> {
   const startTime = settings.startTime ?? 0;
   const endTime = settings.endTime ?? comp.duration;
-  const fps = Math.min(comp.fps, 30); // Cap GIF at 30fps
+  const fps = Math.min(comp.fps, 15);
   const totalFrames = Math.ceil((endTime - startTime) * fps);
 
   const canvas = document.createElement('canvas');
@@ -135,15 +137,25 @@ export async function exportToGIF(
   canvas.height = comp.height;
   const ctx = canvas.getContext('2d', { alpha: false })!;
 
+  const maxDim = 540;
+  const outScale = Math.min(1, maxDim / Math.max(comp.width, comp.height));
+  const gifW = Math.max(1, Math.round(comp.width * outScale));
+  const gifH = Math.max(1, Math.round(comp.height * outScale));
+  const out = document.createElement('canvas');
+  out.width = gifW;
+  out.height = gifH;
+  const outCtx = out.getContext('2d', { alpha: false })!;
+
   const images: string[] = [];
 
   for (let frame = 0; frame < totalFrames; frame++) {
     const time = startTime + frame / fps;
 
-    seekVideoAssets(time, comp, assetCache);
+    await seekVideoAssets(time, comp, assetCache);
     renderFrame(ctx, time, comp, project, assetCache);
+    outCtx.drawImage(canvas, 0, 0, gifW, gifH);
 
-    images.push(canvas.toDataURL('image/jpeg', 0.92));
+    images.push(out.toDataURL('image/jpeg', 0.85));
 
     onProgress({
       frame,
@@ -164,8 +176,8 @@ export async function exportToGIF(
 
   return new Promise((resolve, reject) => {
     gifshot.default.createGIF({
-      gifWidth: comp.width,
-      gifHeight: comp.height,
+      gifWidth: gifW,
+      gifHeight: gifH,
       images,
       interval: 1 / fps,
       numFrames: totalFrames,
@@ -193,11 +205,12 @@ export async function exportToGIF(
 }
 
 /** Seek all video assets to their correct time for a given composition time. */
-function seekVideoAssets(
+async function seekVideoAssets(
   time: number,
   comp: Composition,
   assetCache: Map<string, HTMLImageElement | HTMLVideoElement>
 ) {
+  const waits: Promise<void>[] = [];
   for (const track of comp.tracks) {
     if (!track.visible) continue;
     for (const clip of track.clips) {
@@ -208,11 +221,19 @@ function seekVideoAssets(
       if (!video) continue;
 
       const clipTime = time - clip.start + clip.sourceStart;
-      if (Math.abs(video.currentTime - clipTime) > 0.05) {
+      if (Math.abs(video.currentTime - clipTime) <= 0.05) continue;
+      waits.push(new Promise(resolve => {
+        const done = () => {
+          video.removeEventListener('seeked', done);
+          resolve();
+        };
+        video.addEventListener('seeked', done);
         video.currentTime = clipTime;
-      }
+        window.setTimeout(done, 120);
+      }));
     }
   }
+  if (waits.length) await Promise.all(waits);
 }
 
 /** Trigger a file download. */

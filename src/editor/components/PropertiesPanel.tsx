@@ -1,21 +1,22 @@
 import { useEditor } from '../EditorContext';
 import {
-  evalProp, hasKeyframeAt, easingAt, COMP_PRESETS, findClip,
+  evalProp, hasKeyframeAt, easingAt, COMP_PRESETS, findClip, isAnimated, wouldCreateParentCycle,
+  setKeyframe, makeAnimatedProperty,
 } from '../types';
 import type { Transform, TextStyle, Easing, LayerEffect, EffectType } from '../types';
 import {
   Type, Image, Video, Music, Box, Shapes, Sparkles, Trash2,
-  ChevronDown, ChevronRight, Link, Unlink, Diamond, Settings,
+  ChevronDown, ChevronRight, Link, Unlink, Diamond, Settings, Timer,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 
-const EASINGS: Easing[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out', 'hold'];
+const EASINGS: Easing[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out', 'hold', 'bezier'];
 
 export default function PropertiesPanel() {
   const {
     state, setTransformValues, updateClipProperty, deleteClip, showToast,
-    toggleKeyframe, setKeyframeEasing, updateComposition, setCompositionDuration,
-    setAutoKey,
+    toggleKeyframe, toggleAnimated, setKeyframeEasing, updateComposition, setCompositionDuration,
+    setAutoKey, setTrackVolume,
   } = useEditor();
   const { selectedClipId, autoKey } = state;
 
@@ -146,8 +147,13 @@ export default function PropertiesPanel() {
     <div className="h-full bg-surface-800 border-l border-surface-600 flex flex-col overflow-hidden">
       <div className="p-3 border-b border-surface-600">
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-accent-light">{iconForType()}</span>
-          <h2 className="text-xs font-semibold text-white truncate">{clip.name}</h2>
+          <span className="text-accent-light shrink-0">{iconForType()}</span>
+          <input
+            value={clip.name}
+            onChange={e => updateClipProperty(clip.id, 'name', e.target.value)}
+            className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-white outline-none border-b border-transparent focus:border-accent truncate"
+            title="Rename clip"
+          />
         </div>
         <p className="text-[10px] text-slate-500">{clip.type.toUpperCase()} · {clip.duration.toFixed(2)}s</p>
         <div className="flex items-center gap-2 mt-2">
@@ -172,23 +178,14 @@ export default function PropertiesPanel() {
             {transformOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </button>
           {transformOpen && (
-            <div className="px-3 pb-3 space-y-2">
-              <PropRow label="Position X" value={x} min={-2000} max={2000} step={1} onChange={v => updateValue('x', v)} keyed={hasKeyframeAt(clip.transform.x, t)} onKeyframe={() => toggleKeyframe(clip.id, 'x')} easing={easingAt(clip.transform.x, t)} onEasing={e => setKeyframeEasing(clip.id, 'x', e)} />
-              <PropRow label="Position Y" value={y} min={-2000} max={2000} step={1} onChange={v => updateValue('y', v)} keyed={hasKeyframeAt(clip.transform.y, t)} onKeyframe={() => toggleKeyframe(clip.id, 'y')} easing={easingAt(clip.transform.y, t)} onEasing={e => setKeyframeEasing(clip.id, 'y', e)} />
-              <PropRow label="Anchor X" value={anchorX} min={-500} max={500} step={1} onChange={v => updateValue('anchorX', v)} keyed={!!clip.transform.anchorX && hasKeyframeAt(clip.transform.anchorX, t)} onKeyframe={() => toggleKeyframe(clip.id, 'anchorX')} />
-              <PropRow label="Anchor Y" value={anchorY} min={-500} max={500} step={1} onChange={v => updateValue('anchorY', v)} keyed={!!clip.transform.anchorY && hasKeyframeAt(clip.transform.anchorY, t)} onKeyframe={() => toggleKeyframe(clip.id, 'anchorY')} />
+            <div className="px-3 pb-3 space-y-2.5 min-w-0">
+              <PropRow label="Position X" value={x} min={-2000} max={2000} step={1} onChange={v => updateValue('x', v)} keyed={hasKeyframeAt(clip.transform.x, t)} animated={isAnimated(clip.transform.x)} onKeyframe={() => toggleKeyframe(clip.id, 'x')} onToggleAnimated={() => toggleAnimated(clip.id, 'x')} easing={easingAt(clip.transform.x, t)} onEasing={e => setKeyframeEasing(clip.id, 'x', e)} />
+              <PropRow label="Position Y" value={y} min={-2000} max={2000} step={1} onChange={v => updateValue('y', v)} keyed={hasKeyframeAt(clip.transform.y, t)} animated={isAnimated(clip.transform.y)} onKeyframe={() => toggleKeyframe(clip.id, 'y')} onToggleAnimated={() => toggleAnimated(clip.id, 'y')} easing={easingAt(clip.transform.y, t)} onEasing={e => setKeyframeEasing(clip.id, 'y', e)} />
+              <PropRow label="Anchor X" value={anchorX} min={-500} max={500} step={1} onChange={v => updateValue('anchorX', v)} keyed={!!clip.transform.anchorX && hasKeyframeAt(clip.transform.anchorX, t)} animated={isAnimated(clip.transform.anchorX)} onKeyframe={() => toggleKeyframe(clip.id, 'anchorX')} onToggleAnimated={() => toggleAnimated(clip.id, 'anchorX')} />
+              <PropRow label="Anchor Y" value={anchorY} min={-500} max={500} step={1} onChange={v => updateValue('anchorY', v)} keyed={!!clip.transform.anchorY && hasKeyframeAt(clip.transform.anchorY, t)} animated={isAnimated(clip.transform.anchorY)} onKeyframe={() => toggleKeyframe(clip.id, 'anchorY')} onToggleAnimated={() => toggleAnimated(clip.id, 'anchorY')} />
 
-              <div className="flex items-center gap-2">
-                <label className="text-[10px] text-slate-400 w-16 shrink-0">Scale X</label>
-                <input type="range" min={0} max={5} step={0.01} value={scaleX} onChange={e => updateValue('scaleX', parseFloat(e.target.value))} className="flex-1 accent-accent h-4" />
-                <input type="number" value={Number(scaleX.toFixed(3))} onChange={e => updateValue('scaleX', parseFloat(e.target.value) || 0)} className="w-14 px-1 py-0.5 rounded bg-surface-700 border border-surface-600 text-[10px] text-white focus:border-accent outline-none text-right" step={0.01} />
-                <KfButton active={hasKeyframeAt(clip.transform.scaleX, t)} onClick={() => toggleKeyframe(clip.id, 'scaleX')} />
-              </div>
-
-              <div className="flex items-center gap-2">
-                <label className="text-[10px] text-slate-400 w-16 shrink-0">Scale Y</label>
-                <input type="range" min={0} max={5} step={0.01} value={scaleY} onChange={e => updateValue('scaleY', parseFloat(e.target.value))} className="flex-1 accent-accent h-4" />
-                <input type="number" value={Number(scaleY.toFixed(3))} onChange={e => updateValue('scaleY', parseFloat(e.target.value) || 0)} className="w-14 px-1 py-0.5 rounded bg-surface-700 border border-surface-600 text-[10px] text-white focus:border-accent outline-none text-right" step={0.01} />
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-500">Scale</span>
                 <button
                   onClick={() => setLockScale(!lockScale)}
                   className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${lockScale ? 'bg-accent/30 text-accent-light' : 'bg-surface-600 text-slate-500 hover:text-slate-300'}`}
@@ -197,9 +194,11 @@ export default function PropertiesPanel() {
                   {lockScale ? <Link size={10} /> : <Unlink size={10} />}
                 </button>
               </div>
+              <PropRow label="Scale X" value={scaleX} min={0} max={5} step={0.01} onChange={v => updateValue('scaleX', v)} keyed={hasKeyframeAt(clip.transform.scaleX, t)} animated={isAnimated(clip.transform.scaleX)} onKeyframe={() => toggleKeyframe(clip.id, 'scaleX')} onToggleAnimated={() => toggleAnimated(clip.id, 'scaleX')} easing={easingAt(clip.transform.scaleX, t)} onEasing={e => setKeyframeEasing(clip.id, 'scaleX', e)} />
+              <PropRow label="Scale Y" value={scaleY} min={0} max={5} step={0.01} onChange={v => updateValue('scaleY', v)} keyed={hasKeyframeAt(clip.transform.scaleY, t)} animated={isAnimated(clip.transform.scaleY)} onKeyframe={() => toggleKeyframe(clip.id, 'scaleY')} onToggleAnimated={() => toggleAnimated(clip.id, 'scaleY')} easing={easingAt(clip.transform.scaleY, t)} onEasing={e => setKeyframeEasing(clip.id, 'scaleY', e)} />
 
-              <PropRow label="Rotation" value={rotation} min={-360} max={360} step={1} onChange={v => updateValue('rotation', v)} keyed={hasKeyframeAt(clip.transform.rotation, t)} onKeyframe={() => toggleKeyframe(clip.id, 'rotation')} easing={easingAt(clip.transform.rotation, t)} onEasing={e => setKeyframeEasing(clip.id, 'rotation', e)} />
-              <PropRow label="Opacity" value={opacity} min={0} max={1} step={0.01} onChange={v => updateValue('opacity', v)} keyed={hasKeyframeAt(clip.transform.opacity, t)} onKeyframe={() => toggleKeyframe(clip.id, 'opacity')} easing={easingAt(clip.transform.opacity, t)} onEasing={e => setKeyframeEasing(clip.id, 'opacity', e)} />
+              <PropRow label="Rotation" value={rotation} min={-360} max={360} step={1} onChange={v => updateValue('rotation', v)} keyed={hasKeyframeAt(clip.transform.rotation, t)} animated={isAnimated(clip.transform.rotation)} onKeyframe={() => toggleKeyframe(clip.id, 'rotation')} onToggleAnimated={() => toggleAnimated(clip.id, 'rotation')} easing={easingAt(clip.transform.rotation, t)} onEasing={e => setKeyframeEasing(clip.id, 'rotation', e)} />
+              <PropRow label="Opacity" value={opacity} min={0} max={1} step={0.01} onChange={v => updateValue('opacity', v)} keyed={hasKeyframeAt(clip.transform.opacity, t)} animated={isAnimated(clip.transform.opacity)} onKeyframe={() => toggleKeyframe(clip.id, 'opacity')} onToggleAnimated={() => toggleAnimated(clip.id, 'opacity')} easing={easingAt(clip.transform.opacity, t)} onEasing={e => setKeyframeEasing(clip.id, 'opacity', e)} />
 
               {clip.type === 'shape' && (
                 <div className="flex items-center gap-2 pt-1 border-t border-surface-700/50">
@@ -311,6 +310,46 @@ export default function PropertiesPanel() {
                 <input type="checkbox" checked={clip.meshWireframe || false} onChange={e => updateClipProperty(clip.id, 'meshWireframe', e.target.checked)} className="accent-accent" />
                 Wireframe
               </label>
+              {(['meshRotX', 'meshRotY', 'meshRotZ'] as const).map(key => {
+                const prop = clip[key] ?? makeAnimatedProperty(key === 'meshRotX' ? 18 : 0);
+                const val = evalProp(prop, t);
+                return (
+                  <div key={key}>
+                    <label className="text-[10px] text-slate-500 mb-1 block">{key === 'meshRotX' ? 'Rotate X' : key === 'meshRotY' ? 'Rotate Y' : 'Rotate Z'}</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range" min={-360} max={360} step={1} value={val}
+                        onChange={e => {
+                          const next = (autoKey || isAnimated(prop))
+                            ? setKeyframe(prop, t, parseFloat(e.target.value))
+                            : { keyframes: [{ ...prop.keyframes[0], value: parseFloat(e.target.value) }] };
+                          updateClipProperty(clip.id, key, next);
+                        }}
+                        className="flex-1 accent-accent h-4"
+                      />
+                      <span className="text-[10px] text-slate-400 w-8 text-right">{Math.round(val)}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {clip.type === 'audio' && (
+          <div className="border-b border-surface-700">
+            <div className="px-3 py-2 text-xs font-medium text-slate-300">Audio</div>
+            <div className="px-3 pb-3 space-y-2">
+              <div>
+                <label className="text-[10px] text-slate-500 mb-1 block">Track volume</label>
+                <input
+                  type="range" min={0} max={1} step={0.01}
+                  value={comp.tracks.find(tr => tr.id === clip.trackId)?.volume ?? 1}
+                  onChange={e => setTrackVolume(clip.trackId, parseFloat(e.target.value))}
+                  className="w-full accent-accent h-4"
+                />
+              </div>
+              <p className="text-[9px] text-slate-500">Clip level uses Opacity. Mute and Solo on the track header still apply.</p>
             </div>
           </div>
         )}
@@ -328,7 +367,7 @@ export default function PropertiesPanel() {
                 >
                   <option value="">None</option>
                   {comp.tracks.flatMap(tr => tr.clips)
-                    .filter(c => c.id !== clip.id)
+                    .filter(c => !wouldCreateParentCycle(comp, clip.id, c.id))
                     .map(c => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
@@ -433,7 +472,7 @@ function KfButton({ active, onClick }: { active: boolean; onClick: () => void })
   return (
     <button
       onClick={onClick}
-      className={`w-4 h-4 flex items-center justify-center ${active ? 'text-accent-light' : 'text-slate-600 hover:text-slate-300'}`}
+      className={`w-5 h-5 shrink-0 flex items-center justify-center ${active ? 'text-accent-light' : 'text-slate-600 hover:text-slate-300'}`}
       title={active ? 'Remove keyframe' : 'Add keyframe'}
     >
       <Diamond size={10} fill={active ? 'currentColor' : 'none'} />
@@ -441,7 +480,7 @@ function KfButton({ active, onClick }: { active: boolean; onClick: () => void })
   );
 }
 
-function PropRow({ label, value, min, max, step, onChange, onKeyframe, keyed, easing, onEasing }: {
+function PropRow({ label, value, min, max, step, onChange, onKeyframe, onToggleAnimated, keyed, animated, easing, onEasing }: {
   label: string;
   value: number;
   min: number;
@@ -449,28 +488,77 @@ function PropRow({ label, value, min, max, step, onChange, onKeyframe, keyed, ea
   step: number;
   onChange: (v: number) => void;
   onKeyframe: () => void;
+  onToggleAnimated?: () => void;
   keyed?: boolean;
+  animated?: boolean;
   easing?: Easing;
   onEasing?: (e: Easing) => void;
 }) {
+  const scrub = useRef<{ x: number; value: number } | null>(null);
+
+  const onScrubDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    scrub.current = { x: e.clientX, value };
+    const move = (ev: MouseEvent) => {
+      if (!scrub.current) return;
+      const dx = ev.clientX - scrub.current.x;
+      const next = scrub.current.value + dx * step * (ev.shiftKey ? 10 : 1);
+      onChange(Math.max(min, Math.min(max, next)));
+    };
+    const up = () => {
+      scrub.current = null;
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
+
   return (
-    <div className="space-y-0.5">
-      <div className="flex items-center gap-2">
-        <label className="text-[10px] text-slate-400 w-16 shrink-0">{label}</label>
-        <input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(parseFloat(e.target.value))} className="flex-1 accent-accent h-4" />
-        <input type="number" value={Number(value.toFixed(3))} onChange={e => onChange(parseFloat(e.target.value) || 0)} className="w-14 px-1 py-0.5 rounded bg-surface-700 border border-surface-600 text-[10px] text-white focus:border-accent outline-none text-right" step={step} />
+    <div className="min-w-0 space-y-1">
+      <div className="flex items-center gap-1 min-w-0">
+        {onToggleAnimated && (
+          <button
+            onClick={onToggleAnimated}
+            className={`w-4 h-4 shrink-0 flex items-center justify-center ${animated ? 'text-accent-light' : 'text-slate-600 hover:text-slate-300'}`}
+            title={animated ? 'Disable animation' : 'Enable animation'}
+          >
+            <Timer size={10} />
+          </button>
+        )}
+        <label
+          className="text-[10px] text-slate-400 w-[3.6rem] shrink-0 truncate cursor-ew-resize"
+          onMouseDown={onScrubDown}
+          title="Drag to scrub"
+        >
+          {label}
+        </label>
+        <input
+          type="number"
+          value={Number(value.toFixed(step < 1 ? 3 : 1))}
+          onChange={e => onChange(parseFloat(e.target.value) || 0)}
+          className="min-w-0 flex-1 px-1.5 py-0.5 rounded bg-surface-700 border border-surface-600 text-[10px] text-white focus:border-accent outline-none text-right"
+          step={step}
+        />
         <KfButton active={!!keyed} onClick={onKeyframe} />
       </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={e => onChange(parseFloat(e.target.value))}
+        className="w-full accent-accent h-3.5"
+      />
       {keyed && onEasing && easing && (
-        <div className="pl-16">
-          <select
-            value={easing}
-            onChange={e => onEasing(e.target.value as Easing)}
-            className="w-full px-1 py-0.5 rounded bg-surface-700 border border-surface-600 text-[9px] text-slate-300 outline-none"
-          >
-            {EASINGS.map(es => <option key={es} value={es}>{es}</option>)}
-          </select>
-        </div>
+        <select
+          value={easing}
+          onChange={e => onEasing(e.target.value as Easing)}
+          className="w-full px-1 py-0.5 rounded bg-surface-700 border border-surface-600 text-[9px] text-slate-300 outline-none"
+        >
+          {EASINGS.map(es => <option key={es} value={es}>{es}</option>)}
+        </select>
       )}
     </div>
   );

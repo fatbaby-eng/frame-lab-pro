@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Composition, Project } from '../types';
 import { exportToWebM, exportToGIF, downloadBlob } from '../export';
+import { mediaCacheMap } from '../mediaCache';
 import type { ExportFormat, ExportSettings, ExportProgress } from '../export';
 import { X, Film, Image as ImageIcon, Download, Loader2 } from 'lucide-react';
 
@@ -14,39 +15,36 @@ interface ExportDialogProps {
 export default function ExportDialog({ open, onClose, comp, project }: ExportDialogProps) {
   const [format, setFormat] = useState<ExportFormat>('webm');
   const [quality, setQuality] = useState<'low' | 'medium' | 'high'>('medium');
+  const [useWorkArea, setUseWorkArea] = useState(true);
   const [progress, setProgress] = useState<ExportProgress>({ frame: 0, totalFrames: 0, time: 0, status: 'idle' });
   const [blob, setBlob] = useState<Blob | null>(null);
   const abortRef = useRef(false);
   const assetCache = useRef<Map<string, HTMLImageElement | HTMLVideoElement>>(new Map());
 
-  // Preload assets into cache when dialog opens
   useEffect(() => {
     if (!open) return;
-    project.assets.forEach(asset => {
-      if (assetCache.current.has(asset.id)) return;
-      if (asset.type === 'video') {
-        const video = document.createElement('video');
-        video.src = asset.url;
-        video.crossOrigin = 'anonymous';
-        video.preload = 'auto';
-        assetCache.current.set(asset.id, video);
-      } else if (asset.type === 'image') {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.src = asset.url;
-        assetCache.current.set(asset.id, img);
-      }
-    });
+    assetCache.current = mediaCacheMap(project.assets);
   }, [open, project.assets]);
 
-  const totalFrames = Math.ceil(comp.duration * comp.fps);
+  const rangeStart = useWorkArea ? (comp.workAreaStart ?? 0) : 0;
+  const rangeEnd = useWorkArea ? (comp.workAreaEnd ?? comp.duration) : comp.duration;
+  const exportFps = format === 'gif' ? Math.min(comp.fps, 15) : comp.fps;
+  const totalFrames = Math.max(1, Math.ceil((rangeEnd - rangeStart) * exportFps));
+  const gifScale = Math.min(1, 540 / Math.max(comp.width, comp.height));
+  const outW = format === 'gif' ? Math.round(comp.width * gifScale) : comp.width;
+  const outH = format === 'gif' ? Math.round(comp.height * gifScale) : comp.height;
 
   const handleExport = useCallback(async () => {
     abortRef.current = false;
     setBlob(null);
-    setProgress({ frame: 0, totalFrames, time: 0, status: 'rendering' });
+    setProgress({ frame: 0, totalFrames, time: rangeStart, status: 'rendering' });
 
-    const settings: ExportSettings = { format, quality };
+    const settings: ExportSettings = {
+      format,
+      quality,
+      startTime: rangeStart,
+      endTime: rangeEnd,
+    };
 
     try {
       let result: Blob;
@@ -73,7 +71,7 @@ export default function ExportDialog({ open, onClose, comp, project }: ExportDia
         });
       }
     }
-  }, [format, quality, comp, project, totalFrames]);
+  }, [format, quality, comp, project, totalFrames, rangeStart, rangeEnd]);
 
   const handleDownload = useCallback(() => {
     if (!blob) return;
@@ -151,19 +149,31 @@ export default function ExportDialog({ open, onClose, comp, project }: ExportDia
             </div>
           )}
 
+          <label className="flex items-center justify-between text-[10px] text-slate-400 cursor-pointer">
+            <span>Export work area only</span>
+            <button
+              type="button"
+              onClick={() => setUseWorkArea(v => !v)}
+              disabled={isRendering}
+              className={`w-6 h-3.5 rounded-full relative transition-colors ${useWorkArea ? 'bg-accent' : 'bg-surface-600'}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 bg-white rounded-full transition-transform ${useWorkArea ? 'translate-x-2.5' : ''}`} />
+            </button>
+          </label>
+
           {/* Info */}
           <div className="bg-surface-700/50 rounded-lg px-3 py-2 space-y-1">
             <div className="flex justify-between text-[10px]">
               <span className="text-slate-500">Resolution</span>
-              <span className="text-slate-300">{comp.width}×{comp.height}</span>
+              <span className="text-slate-300">{outW}×{outH}{format === 'gif' && gifScale < 1 ? ' (GIF)' : ''}</span>
             </div>
             <div className="flex justify-between text-[10px]">
               <span className="text-slate-500">Frame Rate</span>
-              <span className="text-slate-300">{comp.fps} fps</span>
+              <span className="text-slate-300">{exportFps} fps</span>
             </div>
             <div className="flex justify-between text-[10px]">
               <span className="text-slate-500">Duration</span>
-              <span className="text-slate-300">{comp.duration.toFixed(1)}s</span>
+              <span className="text-slate-300">{(rangeEnd - rangeStart).toFixed(1)}s</span>
             </div>
             <div className="flex justify-between text-[10px]">
               <span className="text-slate-500">Total Frames</span>

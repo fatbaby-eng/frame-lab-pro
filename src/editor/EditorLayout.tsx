@@ -1,4 +1,5 @@
-import { useRef, useMemo, useState } from 'react';
+import { useRef, useMemo, useState, useEffect } from 'react';
+import { stopTransportAudio, syncTransportAudio } from './audioEngine';
 import { useEditor } from './EditorContext';
 import Timeline from './components/Timeline';
 import Preview from './components/Preview';
@@ -15,15 +16,24 @@ import {
 
 export default function EditorLayout() {
   const {
-    state, togglePlay, goToStart, goToEnd, stepFrame, setProjectName, showToast,
+    state, togglePlay, goToStart, goToEnd, stepFrame, seek, setProjectName, showToast,
     setToolMode, undo, redo, deleteClip, duplicateClip, splitClip, copyClip,
     pasteClip, nudgeClip, saveProjectFile, loadProjectFile, newProject, setLoop,
+    jumpKeyframe, trimClipEdge, toggleExpanded, removeKeyframeAt, setWorkArea,
   } = useEditor();
-  const { currentTime, isPlaying, project, toolMode, selectedClipId, canUndo, canRedo, loop } = state;
+  const { currentTime, isPlaying, project, toolMode, selectedClipId, canUndo, canRedo, loop, selectedKeyframe } = state;
+  const [timelineH, setTimelineH] = useState(280);
   const [exportOpen, setExportOpen] = useState(false);
+  const [tcEdit, setTcEdit] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const comp = project.compositions.find(c => c.id === project.activeCompositionId)!;
+
+  useEffect(() => {
+    syncTransportAudio(comp, project, currentTime, isPlaying);
+  }, [comp, project, currentTime, isPlaying]);
+
+  useEffect(() => () => { stopTransportAudio(project); }, [project]);
 
   const shortcuts: Shortcut[] = useMemo(() => [
     { key: 'space', label: 'Play / Pause', scope: 'Playback', action: togglePlay },
@@ -35,8 +45,26 @@ export default function EditorLayout() {
     { key: 'p', label: 'Pen tool', scope: 'Tools', action: () => setToolMode('pen') },
     { key: 't', label: 'Text tool', scope: 'Tools', action: () => setToolMode('text') },
     { key: 'g', label: 'Shape tool', scope: 'Tools', action: () => setToolMode('shape') },
-    { key: 'delete', label: 'Delete clip', scope: 'Edit', action: () => { if (selectedClipId) deleteClip(selectedClipId); } },
-    { key: 'backspace', label: 'Delete clip', scope: 'Edit', action: () => { if (selectedClipId) deleteClip(selectedClipId); } },
+    { key: 'delete', label: 'Delete keyframe or clip', scope: 'Edit', action: () => {
+      if (selectedKeyframe) removeKeyframeAt(selectedKeyframe.clipId, selectedKeyframe.key, selectedKeyframe.time);
+      else if (selectedClipId) deleteClip(selectedClipId);
+    } },
+    { key: 'backspace', label: 'Delete keyframe or clip', scope: 'Edit', action: () => {
+      if (selectedKeyframe) removeKeyframeAt(selectedKeyframe.clipId, selectedKeyframe.key, selectedKeyframe.time);
+      else if (selectedClipId) deleteClip(selectedClipId);
+    } },
+    { key: 'j', label: 'Previous keyframe', scope: 'Playback', action: () => jumpKeyframe(-1) },
+    { key: 'k', label: 'Next keyframe', scope: 'Playback', action: () => jumpKeyframe(1) },
+    { key: 'u', label: 'Twirl selected layer', scope: 'Timeline', action: () => toggleExpanded() },
+    { key: 's', label: 'Split clip at playhead', scope: 'Edit', action: () => { if (selectedClipId) splitClip(selectedClipId); } },
+    { key: '[', label: 'Trim in to playhead', scope: 'Edit', action: () => { if (selectedClipId) trimClipEdge(selectedClipId, 'in'); } },
+    { key: ']', label: 'Trim out to playhead', scope: 'Edit', action: () => { if (selectedClipId) trimClipEdge(selectedClipId, 'out'); } },
+    { key: 'b', label: 'Set work area start', scope: 'Timeline', action: () => setWorkArea(currentTime, comp.workAreaEnd ?? comp.duration) },
+    { key: 'n', label: 'Set work area end', scope: 'Timeline', action: () => setWorkArea(comp.workAreaStart ?? 0, currentTime) },
+    { key: 'i', label: 'Go to work area start', scope: 'Playback', action: () => goToStart() },
+    { key: 'o', label: 'Go to work area end', scope: 'Playback', action: () => goToEnd() },
+    { key: 'pageup', label: 'Jump back 1s', scope: 'Playback', action: () => stepFrame(-comp.fps) },
+    { key: 'pagedown', label: 'Jump forward 1s', scope: 'Playback', action: () => stepFrame(comp.fps) },
     { key: 'ctrl+z', label: 'Undo', scope: 'Edit', action: undo },
     { key: 'ctrl+y', label: 'Redo', scope: 'Edit', action: redo },
     { key: 'ctrl+shift+z', label: 'Redo', scope: 'Edit', action: redo },
@@ -51,8 +79,9 @@ export default function EditorLayout() {
     { key: 'shift+arrowdown', label: 'Nudge down', scope: 'Edit', action: () => { if (selectedClipId) nudgeClip(selectedClipId, 0, 10); } },
   ], [
     togglePlay, goToStart, goToEnd, stepFrame, setToolMode, selectedClipId,
-    deleteClip, undo, redo, duplicateClip, splitClip, copyClip, pasteClip,
-    saveProjectFile, showToast, nudgeClip,
+    selectedKeyframe, deleteClip, removeKeyframeAt, undo, redo, duplicateClip,
+    splitClip, copyClip, pasteClip, saveProjectFile, showToast, nudgeClip,
+    jumpKeyframe, toggleExpanded, trimClipEdge, setWorkArea, currentTime, comp,
   ]);
 
   const { showHelp, setShowHelp } = useKeyboardShortcuts(shortcuts);
@@ -183,8 +212,24 @@ export default function EditorLayout() {
           </button>
         </div>
 
-        <div className="shrink-0 px-3 py-1 rounded bg-surface-700 border border-surface-600">
-          <span className="text-xs font-mono text-accent-light">{formatTime(currentTime)}</span>
+        <div className="shrink-0 px-2 py-0.5 rounded bg-surface-700 border border-surface-600 flex items-center gap-1">
+          <input
+            value={tcEdit ?? formatTime(currentTime)}
+            onFocus={() => setTcEdit(formatTime(currentTime))}
+            onChange={e => setTcEdit(e.target.value)}
+            onBlur={() => {
+              const parsed = parseTimecode(tcEdit ?? '', comp.fps);
+              if (parsed != null) seek(Math.max(0, Math.min(parsed, comp.duration)));
+              setTcEdit(null);
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              if (e.key === 'Escape') setTcEdit(null);
+            }}
+            className="w-[4.6rem] bg-transparent text-xs font-mono text-accent-light outline-none text-right"
+            title="Jump to timecode (mm:ss:ff)"
+            spellCheck={false}
+          />
           <span className="text-xs font-mono text-slate-500"> / {formatTime(comp.duration)}</span>
         </div>
 
@@ -209,12 +254,30 @@ export default function EditorLayout() {
           <div className="flex-1 min-h-0">
             <Preview />
           </div>
-          <div className="h-64 shrink-0">
+          <div
+            className="h-1.5 shrink-0 cursor-row-resize bg-surface-700 hover:bg-accent/50"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const startY = e.clientY;
+              const startH = timelineH;
+              const move = (ev: MouseEvent) => {
+                setTimelineH(Math.max(180, Math.min(520, startH - (ev.clientY - startY))));
+              };
+              const up = () => {
+                window.removeEventListener('mousemove', move);
+                window.removeEventListener('mouseup', up);
+              };
+              window.addEventListener('mousemove', move);
+              window.addEventListener('mouseup', up);
+            }}
+            title="Drag to resize timeline"
+          />
+          <div className="shrink-0" style={{ height: timelineH }}>
             <Timeline />
           </div>
         </div>
 
-        <div className="w-64 shrink-0">
+        <div className="w-80 min-w-0 shrink-0 overflow-hidden">
           <PropertiesPanel />
         </div>
       </div>
@@ -232,4 +295,26 @@ export default function EditorLayout() {
       )}
     </div>
   );
+}
+
+function parseTimecode(str: string, fps: number): number | null {
+  const parts = str.trim().split(/[:;]/);
+  if (parts.length === 1) {
+    const n = parseFloat(parts[0]);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (parts.length === 2) {
+    const s = parseInt(parts[0], 10);
+    const f = parseInt(parts[1], 10);
+    if ([s, f].some(Number.isNaN)) return null;
+    return s + f / fps;
+  }
+  if (parts.length === 3) {
+    const m = parseInt(parts[0], 10);
+    const s = parseInt(parts[1], 10);
+    const f = parseInt(parts[2], 10);
+    if ([m, s, f].some(Number.isNaN)) return null;
+    return m * 60 + s + f / fps;
+  }
+  return null;
 }

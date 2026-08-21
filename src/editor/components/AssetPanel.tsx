@@ -1,6 +1,7 @@
 import { useRef, useCallback } from 'react';
 import { useEditor } from '../EditorContext';
 import type { Asset, LayerType } from '../types';
+import { analyzeAudioAsset } from '../audioEngine';
 import {
   Upload, Image, Video, Music, FileText, Box, Trash2, Plus,
   Film, PenTool,
@@ -63,6 +64,12 @@ export default function AssetPanel() {
         img.src = url;
       }
 
+      if (type === 'audio') {
+        void analyzeAudioAsset(asset).then(info => {
+          if (info) updateAsset(asset.id, { duration: info.duration, peaks: info.peaks });
+        });
+      }
+
       addAsset(asset);
     });
 
@@ -80,45 +87,31 @@ export default function AssetPanel() {
       else if (file.type.startsWith('audio/')) type = 'audio';
       else if (file.type.startsWith('image/')) type = 'image';
 
-      addAsset({
+      const dropped: Asset = {
         id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         name: file.name,
         type,
         url,
-      });
+      };
+      addAsset(dropped);
+      if (type === 'audio') {
+        void analyzeAudioAsset(dropped).then(info => {
+          if (info) updateAsset(dropped.id, { duration: info.duration, peaks: info.peaks });
+        });
+      }
     });
     if (files.length > 0) showToast(`Dropped ${files.length} file(s)`);
-  }, [addAsset, showToast]);
+  }, [addAsset, showToast, updateAsset]);
 
   const addToTimeline = (asset: Asset) => {
-    const comp = state.project.compositions.find(c => c.id === state.project.activeCompositionId)!;
-    // Find appropriate track
-    const track = comp.tracks.find(t => t.type === asset.type && t.clips.length === 0);
     const start = state.currentTime;
     const duration = asset.duration || 5;
-
-    if (track) {
-      addClip(track.id, asset.type, start, duration, asset.id);
-    } else {
-      // Find first compatible track
-      const anyTrack = comp.tracks.find(t => t.type === asset.type);
-      if (anyTrack) {
-        addClip(anyTrack.id, asset.type, start, duration, asset.id);
-      } else {
-        showToast('No compatible track available');
-      }
-    }
+    addClip(undefined, asset.type, start, duration, asset.id);
   };
 
   const addGeneratedLayer = (type: LayerType) => {
-    const comp = state.project.compositions.find(c => c.id === state.project.activeCompositionId)!;
-    const track = comp.tracks.find(t => t.type === type);
-    if (!track) {
-      showToast(`No ${type} track available. Add one first.`);
-      return;
-    }
-    addClip(track.id, type, state.currentTime, 5);
-    showToast(`Added ${type} layer`);
+    addClip(undefined, type, state.currentTime, 5);
+    showToast(`Added ${type === 'mesh3d' ? '3D' : type} layer`);
   };
 
   const assetsByType = (type: LayerType) => state.project.assets.filter(a => a.type === type);

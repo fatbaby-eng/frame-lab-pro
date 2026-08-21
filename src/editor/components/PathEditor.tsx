@@ -43,10 +43,7 @@ export default function PathEditor({ compWidth, compHeight }: { compWidth: numbe
     const pos = toComp(e.clientX, e.clientY);
 
     if (!clip) {
-      // Create a new path clip on the first path track
-      const pathTrack = comp.tracks.find(t => t.type === 'path');
-      if (!pathTrack) return;
-      const newClipId = addClip(pathTrack.id, 'path', currentTime, 5, undefined, undefined, {
+      const newClipId = addClip(undefined, 'path', currentTime, 5, undefined, undefined, {
         pathData: {
           points: [createPathPoint(pos.x, pos.y)],
           closed: false,
@@ -180,18 +177,7 @@ export default function PathEditor({ compWidth, compHeight }: { compWidth: numbe
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      {/* Render the path curve */}
-      {path && path.points.length > 1 && (
-        <path
-          d={pathToSvg(path)}
-          fill={clip?.pathFillColor || 'transparent'}
-          stroke={clip?.pathStrokeColor || '#6366f1'}
-          strokeWidth={clip?.pathStrokeWidth || 3}
-          style={{ pointerEvents: 'none' }}
-        />
-      )}
-
-      {/* Render points and handles */}
+      {/* Handles only — the canvas already strokes the path */}
       {path && path.points.map((pt, i) => (
         <g key={i}>
           {/* Control handle lines */}
