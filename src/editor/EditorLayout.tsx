@@ -116,9 +116,12 @@ export default function EditorLayout() {
     <div className="h-screen w-screen bg-surface-900 text-slate-200 flex flex-col overflow-hidden relative">
       <div className="h-10 bg-surface-800 border-b border-surface-600 flex items-center px-3 gap-2 shrink-0 overflow-x-auto scrollbar-hide">
         <div className="flex items-center gap-2 mr-4 shrink-0">
-          <div className="w-7 h-7 rounded-md bg-accent flex items-center justify-center text-white font-bold text-sm">
-            FL
-          </div>
+          <img
+            src={`${import.meta.env.BASE_URL}logo.png`}
+            alt="Frame Lab"
+            title="Frame Lab Pro"
+            className="w-7 h-7 rounded-md object-contain bg-black shrink-0"
+          />
           <input
             value={project.name}
             onChange={e => setProjectName(e.target.value)}
