@@ -2,6 +2,10 @@
 // Frame Lab — Core Editor Types
 // ============================================
 
+export type MeshShape = 'cube' | 'sphere' | 'torus' | 'plane' | 'dodecahedron' | 'icosahedron' | 'cone' | 'model';
+
+export const MESH_PRIMITIVES: MeshShape[] = ['cube', 'sphere', 'torus', 'plane', 'dodecahedron', 'icosahedron', 'cone'];
+
 export type LayerType = 'video' | 'audio' | 'image' | 'text' | 'shape' | 'mesh3d' | 'effect' | 'path';
 
 export type Easing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold' | 'bezier';
@@ -332,12 +336,28 @@ export interface Clip {
   shapeStroke?: number;
   effectParams?: Record<string, number>;
   // 3D mesh
-  meshShape?: 'cube' | 'sphere' | 'torus' | 'dodecahedron' | 'icosahedron' | 'cone';
+  meshShape?: MeshShape;
   meshColor?: string;
   meshWireframe?: boolean;
   meshRotX?: AnimatedProperty;
   meshRotY?: AnimatedProperty;
   meshRotZ?: AnimatedProperty;
+  meshSegments?: number;
+  meshMetalness?: number;
+  meshRoughness?: number;
+  meshMapAssetId?: string;
+  meshMapRepeatU?: number;
+  meshMapRepeatV?: number;
+  meshMapOffsetU?: number;
+  meshMapOffsetV?: number;
+  meshMapRotation?: number;
+  meshLightAmbient?: number;
+  meshLightAmbientColor?: string;
+  meshLightKey?: number;
+  meshLightKeyColor?: string;
+  meshLightAzimuth?: number;
+  meshLightElevation?: number;
+  meshLightFill?: number;
   // Path
   pathData?: PathData;
   pathStrokeWidth?: number;
@@ -584,6 +604,16 @@ export function createNewClip(
     meshRotX: type === 'mesh3d' ? makeAnimatedProperty(18) : undefined,
     meshRotY: type === 'mesh3d' ? makeAnimatedProperty(0) : undefined,
     meshRotZ: type === 'mesh3d' ? makeAnimatedProperty(0) : undefined,
+    meshSegments: type === 'mesh3d' ? 32 : undefined,
+    meshMetalness: type === 'mesh3d' ? 0.38 : undefined,
+    meshRoughness: type === 'mesh3d' ? 0.32 : undefined,
+    meshMapRepeatU: type === 'mesh3d' ? 1 : undefined,
+    meshMapRepeatV: type === 'mesh3d' ? 1 : undefined,
+    meshLightAmbient: type === 'mesh3d' ? 0.85 : undefined,
+    meshLightKey: type === 'mesh3d' ? 1.15 : undefined,
+    meshLightAzimuth: type === 'mesh3d' ? 35 : undefined,
+    meshLightElevation: type === 'mesh3d' ? 40 : undefined,
+    meshLightFill: type === 'mesh3d' ? 0.45 : undefined,
     pathData: type === 'path' ? { points: [], closed: false } : undefined,
     pathStrokeWidth: type === 'path' ? 3 : undefined,
     pathStrokeColor: type === 'path' ? '#6366f1' : undefined,

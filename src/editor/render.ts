@@ -329,7 +329,7 @@ function renderClip(
       break;
     }
     case 'mesh3d': {
-      const sprite = renderMeshLayer(clip, currentTime - clip.start);
+      const sprite = renderMeshLayer(clip, currentTime - clip.start, getAsset);
       if (sprite) {
         ctx.drawImage(sprite, -MESH_SPRITE / 2, -MESH_SPRITE / 2, MESH_SPRITE, MESH_SPRITE);
       }

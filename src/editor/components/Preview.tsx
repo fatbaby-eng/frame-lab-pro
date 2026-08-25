@@ -7,6 +7,7 @@ import {
 } from '../render';
 import type { SelectionBox } from '../render';
 import { mediaCacheMap } from '../mediaCache';
+import { MESH_READY_EVENT } from '../mesh3d';
 import {
   Maximize2, Grid3X3, ZoomIn, ZoomOut, Scan,
 } from 'lucide-react';
@@ -28,6 +29,7 @@ export default function Preview() {
 
   const comp = project.compositions.find(c => c.id === project.activeCompositionId)!;
   const [previewScale, setPreviewScale] = useState(0.35);
+  const [meshTick, setMeshTick] = useState(0);
   const userZoomed = useRef(false);
 
   const [editingClipId, setEditingClipId] = useState<string | null>(null);
@@ -91,6 +93,12 @@ export default function Preview() {
   };
 
   useEffect(() => {
+    const onReady = () => setMeshTick(n => n + 1);
+    window.addEventListener(MESH_READY_EVENT, onReady);
+    return () => window.removeEventListener(MESH_READY_EVENT, onReady);
+  }, []);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -122,7 +130,7 @@ export default function Preview() {
       showSafeZones: true,
       selectedClipId: toolMode === 'pen' ? null : selectedClipId,
     });
-  }, [currentTime, isPlaying, comp, project, showGrid, selectedClipId, toolMode]);
+  }, [currentTime, isPlaying, comp, project, showGrid, selectedClipId, toolMode, meshTick]);
 
   const canvasToComp = useCallback((e: { clientX: number; clientY: number }) => {
     const canvas = canvasRef.current;

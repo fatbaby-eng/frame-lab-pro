@@ -18,6 +18,19 @@ const typeIcons: Record<LayerType, typeof Image> = {
   path: PenTool,
 };
 
+function is3dFile(file: File): boolean {
+  const n = file.name.toLowerCase();
+  return n.endsWith('.glb') || n.endsWith('.gltf') || n.endsWith('.obj')
+    || file.type === 'model/gltf-binary' || file.type === 'model/gltf+json';
+}
+
+function layerTypeForFile(file: File): LayerType {
+  if (file.type.startsWith('video/')) return 'video';
+  if (file.type.startsWith('audio/')) return 'audio';
+  if (is3dFile(file)) return 'mesh3d';
+  return 'image';
+}
+
 export default function AssetPanel() {
   const { state, addAsset, deleteAsset, addClip, showToast, updateAsset } = useEditor();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -28,10 +41,7 @@ export default function AssetPanel() {
 
     files.forEach(file => {
       const url = URL.createObjectURL(file);
-      let type: LayerType = 'image';
-      if (file.type.startsWith('video/')) type = 'video';
-      else if (file.type.startsWith('audio/')) type = 'audio';
-      else if (file.type.startsWith('image/')) type = 'image';
+      let type: LayerType = layerTypeForFile(file);
 
       const asset: Asset = {
         id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -82,10 +92,7 @@ export default function AssetPanel() {
     const files = Array.from(e.dataTransfer.files);
     files.forEach(file => {
       const url = URL.createObjectURL(file);
-      let type: LayerType = 'image';
-      if (file.type.startsWith('video/')) type = 'video';
-      else if (file.type.startsWith('audio/')) type = 'audio';
-      else if (file.type.startsWith('image/')) type = 'image';
+      let type: LayerType = layerTypeForFile(file);
 
       const dropped: Asset = {
         id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -106,6 +113,10 @@ export default function AssetPanel() {
   const addToTimeline = (asset: Asset) => {
     const start = state.currentTime;
     const duration = asset.duration || 5;
+    if (asset.type === 'mesh3d') {
+      addClip(undefined, 'mesh3d', start, duration, asset.id, undefined, { meshShape: 'model', meshColor: '#ffffff' });
+      return;
+    }
     addClip(undefined, asset.type, start, duration, asset.id);
   };
 
@@ -130,7 +141,7 @@ export default function AssetPanel() {
           ref={fileInputRef}
           type="file"
           multiple
-          accept="video/*,audio/*,image/*"
+          accept="video/*,audio/*,image/*,.glb,.gltf,.obj,model/gltf-binary,model/gltf+json"
           onChange={handleFileSelect}
           className="hidden"
         />
@@ -139,7 +150,7 @@ export default function AssetPanel() {
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-slate-300 text-xs font-medium transition-colors border border-surface-600 border-dashed"
         >
           <Upload size={14} />
-          Import Media
+          Import Media & 3D
         </button>
       </div>
 
@@ -181,11 +192,15 @@ export default function AssetPanel() {
         {assetsByType('audio').length > 0 && (
           <AssetSection title="Audio" assets={assetsByType('audio')} onAdd={addToTimeline} onDelete={deleteAsset} />
         )}
+        {assetsByType('mesh3d').length > 0 && (
+          <AssetSection title="3D Models" assets={assetsByType('mesh3d')} onAdd={addToTimeline} onDelete={deleteAsset} />
+        )}
 
         {state.project.assets.length === 0 && (
           <div className="text-center py-8 text-slate-500">
             <Image size={24} className="mx-auto mb-2 opacity-20" />
             <p className="text-[10px]">Drop files here or click Import</p>
+            <p className="text-[9px] mt-1 opacity-70">Images, video, audio, GLB, GLTF, OBJ</p>
           </div>
         )}
       </div>
@@ -211,6 +226,8 @@ function AssetSection({ title, assets, onAdd, onDelete }: {
             <div className="w-8 h-8 rounded bg-surface-600 flex items-center justify-center shrink-0 overflow-hidden">
               {asset.type === 'image' && asset.url ? (
                 <img src={asset.url} alt="" className="w-full h-full object-cover" />
+              ) : asset.type === 'mesh3d' ? (
+                <Box size={14} className="text-accent-light" />
               ) : (
                 <span className="text-[8px] text-slate-500 uppercase">{asset.type[0]}</span>
               )}

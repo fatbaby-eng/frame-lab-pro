@@ -1,9 +1,9 @@
 import { useEditor } from '../EditorContext';
 import {
   evalProp, hasKeyframeAt, easingAt, COMP_PRESETS, findClip, isAnimated, wouldCreateParentCycle,
-  setKeyframe, makeAnimatedProperty, EFFECT_DEFS,
+  setKeyframe, makeAnimatedProperty, EFFECT_DEFS, MESH_PRIMITIVES,
 } from '../types';
-import type { Transform, TextStyle, Easing, LayerEffect, EffectType } from '../types';
+import type { Transform, TextStyle, Easing, LayerEffect, EffectType, MeshShape } from '../types';
 import {
   Type, Image, Video, Music, Box, Shapes, Sparkles, Trash2,
   ChevronDown, ChevronRight, Link, Unlink, Diamond, Settings, Timer,
@@ -295,24 +295,72 @@ export default function PropertiesPanel() {
 
         {clip.type === 'mesh3d' && (
           <div className="border-b border-surface-700">
-            <div className="px-3 py-2 text-xs font-medium text-slate-300">3D Mesh</div>
-            <div className="px-3 pb-3 space-y-2">
+            <div className="px-3 py-2 text-xs font-medium text-slate-300">3D Object</div>
+            <div className="px-3 pb-3 space-y-3">
               <div>
-                <label className="text-[10px] text-slate-500 mb-1 block">Primitive</label>
+                <label className="text-[10px] text-slate-500 mb-1 block">Structure</label>
                 <div className="flex flex-wrap gap-1">
-                  {(['cube', 'sphere', 'torus', 'dodecahedron', 'icosahedron', 'cone'] as const).map(s => (
-                    <button key={s} onClick={() => updateClipProperty(clip.id, 'meshShape', s)} className={`px-2 py-0.5 text-[10px] rounded capitalize ${clip.meshShape === s ? 'bg-accent text-white' : 'bg-surface-700 text-slate-400 hover:text-white'}`}>{s}</button>
+                  {MESH_PRIMITIVES.map(s => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => updateClipProperty(clip.id, 'meshShape', s as MeshShape)}
+                      className={`px-2 py-0.5 text-[10px] rounded capitalize ${clip.meshShape === s ? 'bg-accent text-white' : 'bg-surface-700 text-slate-400 hover:text-white'}`}
+                    >
+                      {s}
+                    </button>
                   ))}
+                  <button
+                    type="button"
+                    onClick={() => updateClipProperty(clip.id, 'meshShape', 'model')}
+                    className={`px-2 py-0.5 text-[10px] rounded ${clip.meshShape === 'model' ? 'bg-accent text-white' : 'bg-surface-700 text-slate-400 hover:text-white'}`}
+                  >
+                    Model
+                  </button>
                 </div>
               </div>
-              <div className="flex-1">
-                <label className="text-[10px] text-slate-500 mb-1 block">Color</label>
-                <input type="color" value={clip.meshColor || '#6366f1'} onChange={e => updateClipProperty(clip.id, 'meshColor', e.target.value)} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
+
+              {clip.meshShape === 'model' && (
+                <div>
+                  <label className="text-[10px] text-slate-500 mb-1 block">Imported model</label>
+                  <select
+                    value={clip.assetId || ''}
+                    onChange={e => updateClipProperty(clip.id, 'assetId', e.target.value || null)}
+                    className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none"
+                  >
+                    <option value="">None — import a GLB, GLTF, or OBJ</option>
+                    {state.project.assets.filter(a => a.type === 'mesh3d').map(a => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {clip.meshShape !== 'model' && (
+                <RangeField
+                  label="Segments"
+                  value={clip.meshSegments ?? 32}
+                  min={3}
+                  max={64}
+                  step={1}
+                  onChange={v => updateClipProperty(clip.id, 'meshSegments', v)}
+                />
+              )}
+
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="text-[10px] text-slate-500 mb-1 block">Color</label>
+                  <input type="color" value={clip.meshColor || '#6366f1'} onChange={e => updateClipProperty(clip.id, 'meshColor', e.target.value)} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
+                </div>
+                <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer pt-4">
+                  <input type="checkbox" checked={clip.meshWireframe || false} onChange={e => updateClipProperty(clip.id, 'meshWireframe', e.target.checked)} className="accent-accent" />
+                  Wireframe
+                </label>
               </div>
-              <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer">
-                <input type="checkbox" checked={clip.meshWireframe || false} onChange={e => updateClipProperty(clip.id, 'meshWireframe', e.target.checked)} className="accent-accent" />
-                Wireframe
-              </label>
+
+              <RangeField label="Metalness" value={clip.meshMetalness ?? 0.38} min={0} max={1} step={0.01} onChange={v => updateClipProperty(clip.id, 'meshMetalness', v)} />
+              <RangeField label="Roughness" value={clip.meshRoughness ?? 0.32} min={0} max={1} step={0.01} onChange={v => updateClipProperty(clip.id, 'meshRoughness', v)} />
+
               {(['meshRotX', 'meshRotY', 'meshRotZ'] as const).map(key => {
                 const prop = clip[key] ?? makeAnimatedProperty(key === 'meshRotX' ? 18 : 0);
                 const val = evalProp(prop, t);
@@ -335,6 +383,45 @@ export default function PropertiesPanel() {
                   </div>
                 );
               })}
+
+              <div className="pt-1 border-t border-surface-700/60">
+                <label className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5 block">Texture mapping</label>
+                <select
+                  value={clip.meshMapAssetId || ''}
+                  onChange={e => updateClipProperty(clip.id, 'meshMapAssetId', e.target.value || undefined)}
+                  className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none mb-2"
+                >
+                  <option value="">None (solid color)</option>
+                  {state.project.assets.filter(a => a.type === 'image').map(a => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+                </select>
+                <p className="text-[9px] text-slate-500 mb-2">Import an image, then map it onto this object. Use Plane for a photo card.</p>
+                <RangeField label="Repeat U" value={clip.meshMapRepeatU ?? 1} min={0.1} max={8} step={0.1} onChange={v => updateClipProperty(clip.id, 'meshMapRepeatU', v)} />
+                <RangeField label="Repeat V" value={clip.meshMapRepeatV ?? 1} min={0.1} max={8} step={0.1} onChange={v => updateClipProperty(clip.id, 'meshMapRepeatV', v)} />
+                <RangeField label="Offset U" value={clip.meshMapOffsetU ?? 0} min={-1} max={1} step={0.01} onChange={v => updateClipProperty(clip.id, 'meshMapOffsetU', v)} />
+                <RangeField label="Offset V" value={clip.meshMapOffsetV ?? 0} min={-1} max={1} step={0.01} onChange={v => updateClipProperty(clip.id, 'meshMapOffsetV', v)} />
+                <RangeField label="Map rotation" value={clip.meshMapRotation ?? 0} min={-180} max={180} step={1} onChange={v => updateClipProperty(clip.id, 'meshMapRotation', v)} />
+              </div>
+
+              <div className="pt-1 border-t border-surface-700/60">
+                <label className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5 block">Lighting</label>
+                <div className="flex gap-2 mb-2">
+                  <div className="flex-1">
+                    <label className="text-[10px] text-slate-500 mb-1 block">Ambient</label>
+                    <input type="color" value={clip.meshLightAmbientColor || '#ffffff'} onChange={e => updateClipProperty(clip.id, 'meshLightAmbientColor', e.target.value)} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-[10px] text-slate-500 mb-1 block">Key light</label>
+                    <input type="color" value={clip.meshLightKeyColor || '#ffffff'} onChange={e => updateClipProperty(clip.id, 'meshLightKeyColor', e.target.value)} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
+                  </div>
+                </div>
+                <RangeField label="Ambient" value={clip.meshLightAmbient ?? 0.85} min={0} max={2} step={0.05} onChange={v => updateClipProperty(clip.id, 'meshLightAmbient', v)} />
+                <RangeField label="Key" value={clip.meshLightKey ?? 1.15} min={0} max={3} step={0.05} onChange={v => updateClipProperty(clip.id, 'meshLightKey', v)} />
+                <RangeField label="Fill" value={clip.meshLightFill ?? 0.45} min={0} max={2} step={0.05} onChange={v => updateClipProperty(clip.id, 'meshLightFill', v)} />
+                <RangeField label="Azimuth" value={clip.meshLightAzimuth ?? 35} min={0} max={360} step={1} onChange={v => updateClipProperty(clip.id, 'meshLightAzimuth', v)} />
+                <RangeField label="Elevation" value={clip.meshLightElevation ?? 40} min={-90} max={90} step={1} onChange={v => updateClipProperty(clip.id, 'meshLightElevation', v)} />
+              </div>
             </div>
           </div>
         )}
@@ -593,6 +680,36 @@ function PropRow({ label, value, min, max, step, onChange, onKeyframe, onToggleA
           {EASINGS.map(es => <option key={es} value={es}>{es}</option>)}
         </select>
       )}
+    </div>
+  );
+}
+
+function RangeField({
+  label, value, min, max, step, onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+}) {
+  const decimals = step < 1 ? 2 : 0;
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-0.5">
+        <label className="text-[10px] text-slate-500">{label}</label>
+        <span className="text-[10px] text-slate-400 tabular-nums">{Number(value.toFixed(decimals))}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={e => onChange(parseFloat(e.target.value))}
+        className="w-full accent-accent h-4"
+      />
     </div>
   );
 }
