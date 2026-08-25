@@ -29,8 +29,8 @@ function ensure() {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(32, 1, 0.1, 20);
-  camera.position.set(0, 0.15, 3.4);
+  camera = new THREE.PerspectiveCamera(32, 1, 0.1, 40);
+  camera.position.set(0, 0, 5);
   camera.lookAt(0, 0, 0);
 
   const hemi = new THREE.HemisphereLight(0xffffff, 0x1e1b4b, 0.85);
@@ -90,6 +90,22 @@ function syncMesh(shape: string, color: string, wireframe: boolean) {
   currentWire = wireframe;
 }
 
+/** Pull the camera back so the whole mesh sits inside the square sprite. */
+function frameMesh() {
+  if (!mesh || !camera) return;
+  mesh.updateMatrixWorld(true);
+  const sphere = new THREE.Sphere();
+  new THREE.Box3().setFromObject(mesh).getBoundingSphere(sphere);
+  const radius = Math.max(sphere.radius, 0.5);
+  const fov = (camera.fov * Math.PI) / 180;
+  const dist = (radius * 1.22) / Math.tan(fov / 2);
+  camera.position.set(sphere.center.x, sphere.center.y, sphere.center.z + dist);
+  camera.lookAt(sphere.center);
+  camera.near = Math.max(0.05, dist / 40);
+  camera.far = dist * 8;
+  camera.updateProjectionMatrix();
+}
+
 /** Render the clip's mesh into a WebGL canvas for compositing. */
 export function renderMeshLayer(clip: Clip, clipTime: number): HTMLCanvasElement | null {
   try {
@@ -102,6 +118,7 @@ export function renderMeshLayer(clip: Clip, clipTime: number): HTMLCanvasElement
     const ry = ((clip.meshRotY ? evalProp(clip.meshRotY, clipTime) : 0) * Math.PI) / 180;
     const rz = ((clip.meshRotZ ? evalProp(clip.meshRotZ, clipTime) : 0) * Math.PI) / 180;
     mesh.rotation.set(rx, ry, rz);
+    frameMesh();
 
     renderer.render(scene, camera);
     return renderer.domElement;
