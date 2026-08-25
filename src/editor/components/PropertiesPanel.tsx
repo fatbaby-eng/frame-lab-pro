@@ -1,7 +1,7 @@
 import { useEditor } from '../EditorContext';
 import {
   evalProp, hasKeyframeAt, easingAt, COMP_PRESETS, findClip, isAnimated, wouldCreateParentCycle,
-  setKeyframe, makeAnimatedProperty,
+  setKeyframe, makeAnimatedProperty, EFFECT_DEFS,
 } from '../types';
 import type { Transform, TextStyle, Easing, LayerEffect, EffectType } from '../types';
 import {
@@ -25,6 +25,7 @@ export default function PropertiesPanel() {
 
   const [transformOpen, setTransformOpen] = useState(true);
   const [styleOpen, setStyleOpen] = useState(true);
+  const [effectsOpen, setEffectsOpen] = useState(true);
   const [lockScale, setLockScale] = useState(true);
 
   if (!clip) {
@@ -127,10 +128,12 @@ export default function PropertiesPanel() {
   const effects = clip.effects ?? [];
 
   const addEffect = (type: EffectType) => {
+    if (effects.some(e => e.type === type)) return;
+    const def = EFFECT_DEFS[type];
     const next: LayerEffect[] = [...effects, {
       id: `fx-${Date.now()}`,
       type,
-      amount: type === 'blur' ? 8 : 100,
+      amount: def.defaultAmount,
     }];
     updateClipProperty(clip.id, 'effects', next);
   };
@@ -426,32 +429,62 @@ export default function PropertiesPanel() {
         )}
 
         <div className="border-b border-surface-700">
-          <div className="px-3 py-2 text-xs font-medium text-slate-300">Effects</div>
-          <div className="px-3 pb-3 space-y-2">
-            {effects.map(fx => (
-              <div key={fx.id} className="flex items-center gap-2">
-                <span className="text-[10px] text-slate-400 w-16 capitalize shrink-0">{fx.type}</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={fx.type === 'blur' ? 40 : 200}
-                  step={1}
-                  value={fx.amount}
-                  onChange={e => updateEffect(fx.id, parseFloat(e.target.value))}
-                  className="flex-1 accent-accent h-4"
-                />
-                <span className="text-[10px] text-slate-400 w-8 text-right">{fx.amount}</span>
-                <button onClick={() => removeEffect(fx.id)} className="text-slate-600 hover:text-red-400"><Trash2 size={10} /></button>
+          <button
+            onClick={() => setEffectsOpen(!effectsOpen)}
+            className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-slate-300 hover:text-white"
+          >
+            <span className="flex items-center gap-1.5">
+              <Sparkles size={11} className="text-accent-light" />
+              Effects
+            </span>
+            {effectsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </button>
+          {effectsOpen && (
+            <div className="px-3 pb-3 space-y-2">
+              <p className="text-[10px] text-slate-500">Applies to this layer only. Works on text, shapes, 3D, images, video, and paths.</p>
+              {effects.map(fx => {
+                const def = EFFECT_DEFS[fx.type];
+                return (
+                  <div key={fx.id} className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-300 w-[4.5rem] shrink-0 truncate">{def.label}</span>
+                      <input
+                        type="range"
+                        min={def.min}
+                        max={def.max}
+                        step={def.step}
+                        value={fx.amount}
+                        onChange={e => updateEffect(fx.id, parseFloat(e.target.value))}
+                        className="flex-1 accent-accent h-4"
+                      />
+                      <span className="text-[10px] text-slate-400 w-10 text-right tabular-nums">
+                        {fx.amount}{def.unit}
+                      </span>
+                      <button type="button" onClick={() => removeEffect(fx.id)} className="text-slate-600 hover:text-red-400" title="Remove effect">
+                        <Trash2 size={10} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="flex flex-wrap gap-1 pt-1">
+                {(Object.keys(EFFECT_DEFS) as EffectType[]).map(type => {
+                  const used = effects.some(e => e.type === type);
+                  return (
+                    <button
+                      key={type}
+                      type="button"
+                      disabled={used}
+                      onClick={() => addEffect(type)}
+                      className="px-2 py-0.5 rounded bg-surface-700 hover:bg-surface-600 text-[10px] text-slate-300 disabled:opacity-30 disabled:hover:bg-surface-700"
+                    >
+                      + {EFFECT_DEFS[type].label}
+                    </button>
+                  );
+                })}
               </div>
-            ))}
-            <div className="flex flex-wrap gap-1">
-              {(['blur', 'brightness', 'contrast', 'saturate'] as EffectType[]).map(type => (
-                <button key={type} onClick={() => addEffect(type)} className="px-2 py-0.5 rounded bg-surface-700 hover:bg-surface-600 text-[10px] text-slate-400 capitalize">
-                  + {type}
-                </button>
-              ))}
             </div>
-          </div>
+          )}
         </div>
 
         <div className="p-3">

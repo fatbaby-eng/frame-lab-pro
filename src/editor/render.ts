@@ -222,6 +222,8 @@ function applyEffects(ctx: CanvasRenderingContext2D, effects?: LayerEffect[]) {
       case 'brightness': parts.push(`brightness(${e.amount / 100})`); break;
       case 'contrast': parts.push(`contrast(${e.amount / 100})`); break;
       case 'saturate': parts.push(`saturate(${e.amount / 100})`); break;
+      case 'grayscale': parts.push(`grayscale(${e.amount / 100})`); break;
+      case 'opacity': parts.push(`opacity(${1 - Math.max(0, Math.min(100, e.amount)) / 100})`); break;
     }
   }
   ctx.filter = parts.join(' ') || 'none';

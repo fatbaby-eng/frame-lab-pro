@@ -400,7 +400,7 @@ export default function Timeline() {
               return (
                 <div key={track.id} style={{ height: trackHeight(track) }} className="border-b border-surface-700">
                   <div
-                    className={`h-9 flex items-center px-1.5 gap-0.5 group cursor-grab ${selectedTrackId === track.id ? 'bg-accent/10' : ''}`}
+                    className={`h-9 flex items-center px-1.5 gap-0.5 group cursor-grab ${selectedClipId && track.clips.some(c => c.id === selectedClipId) ? 'bg-accent/10' : selectedTrackId === track.id ? 'bg-white/5' : ''}`}
                     onClick={() => selectTrack(track.id)}
                     onMouseDown={(e) => {
                       if ((e.target as HTMLElement).closest('button')) return;

@@ -10,7 +10,7 @@ import {
   createDefaultComposition, createNewClip, setKeyframe, removeKeyframe,
   hasKeyframeAt, findClip, evalProp, moveKeyframe as moveKeyframeOnProp,
   TRANSFORM_PROP_KEYS, isAnimated, applyBezierToKeyframe, hydrateAnimatedProperty,
-  newKeyframeId,
+  newKeyframeId, nextClipName,
 } from './types';
 
 const AUTOSAVE_KEY = 'framelab-autosave-v3';
@@ -350,11 +350,15 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   }, [mutate]);
 
   const selectClip = useCallback((id: string | null) => {
-    setState(s => ({
-      ...s,
-      selectedClipId: id,
-      selectedKeyframe: id && s.selectedKeyframe?.clipId === id ? s.selectedKeyframe : null,
-    }));
+    setState(s => {
+      const clip = id ? findClip(getComp(s), id) : null;
+      return {
+        ...s,
+        selectedClipId: id,
+        selectedTrackId: clip?.trackId ?? s.selectedTrackId,
+        selectedKeyframe: id && s.selectedKeyframe?.clipId === id ? s.selectedKeyframe : null,
+      };
+    });
   }, []);
 
   const selectKeyframe = useCallback((kf: EditorState['selectedKeyframe']) => {
@@ -374,7 +378,18 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const selectTrack = useCallback((id: string | null) => {
-    setState(s => ({ ...s, selectedTrackId: id, selectedClipId: null }));
+    setState(s => {
+      const track = id ? getComp(s).tracks.find(t => t.id === id) : undefined;
+      const clip = track?.clips.find(c => s.currentTime >= c.start && s.currentTime < c.start + c.duration)
+        ?? track?.clips[0]
+        ?? null;
+      return {
+        ...s,
+        selectedTrackId: id,
+        selectedClipId: clip?.id ?? null,
+        selectedKeyframe: clip && s.selectedKeyframe?.clipId === clip.id ? s.selectedKeyframe : null,
+      };
+    });
   }, []);
 
   const setToolMode = useCallback((mode: ToolMode) => {
@@ -398,13 +413,14 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     mutate('addClip', s => {
       const next = updateComp(s, comp => {
         let tracks = comp.tracks;
-        let target = (trackId ? tracks.find(t => t.id === trackId && !t.locked) : undefined)
-          ?? tracks.find(t => t.type === type && !t.locked)
-          ?? tracks.find(t => t.type === type);
+        const explicit = trackId ? tracks.find(t => t.id === trackId && !t.locked) : undefined;
+        let target = explicit;
+        const assetName = assetId ? s.project.assets.find(a => a.id === assetId)?.name : undefined;
+        clip.name = nextClipName(comp, type, assetName);
         if (!target) {
           const newTrack: Track = {
             id: `track-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-            name: `${type.charAt(0).toUpperCase() + type.slice(1)} ${tracks.filter(t => t.type === type).length + 1}`,
+            name: clip.name,
             type,
             visible: true,
             locked: false,
@@ -431,13 +447,18 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 
   const deleteClip = useCallback((clipId: string) => {
     mutate('deleteClip', s => {
-      const next = updateComp(s, comp => ({
-        ...comp,
-        tracks: comp.tracks.map(t => ({
-          ...t,
-          clips: t.clips.filter(c => c.id !== clipId),
-        })),
-      }));
+      const next = updateComp(s, comp => {
+        let sourceId: string | null = null;
+        const tracks = comp.tracks.map(t => {
+          if (!t.clips.some(c => c.id === clipId)) return t;
+          sourceId = t.id;
+          return { ...t, clips: t.clips.filter(c => c.id !== clipId) };
+        });
+        return {
+          ...comp,
+          tracks: tracks.filter(t => t.clips.length > 0 || t.id !== sourceId),
+        };
+      });
       return { ...next, selectedClipId: s.selectedClipId === clipId ? null : s.selectedClipId };
     });
   }, [mutate]);
@@ -520,12 +541,16 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   const updateClipProperty = useCallback((clipId: string, key: string, value: unknown) => {
     mutate('clipProp', s => updateComp(s, comp => ({
       ...comp,
-      tracks: comp.tracks.map(t => ({
-        ...t,
-        clips: t.clips.map(c =>
+      tracks: comp.tracks.map(t => {
+        const has = t.clips.some(c => c.id === clipId);
+        const clips = t.clips.map(c =>
           c.id === clipId ? { ...c, [key]: value } : c
-        ),
-      })),
+        );
+        if (key === 'name' && has && clips.length === 1 && typeof value === 'string') {
+          return { ...t, name: value, clips };
+        }
+        return { ...t, clips };
+      }),
     })));
   }, [mutate]);
 
@@ -813,20 +838,31 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       const comp = getComp(s);
       const clip = findClip(comp, clipId);
       if (!clip) return s;
+      const newTrackId = `track-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
       const copy: Clip = {
         ...JSON.parse(JSON.stringify(clip)) as Clip,
         id: `clip-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         name: `${clip.name} copy`,
         start: clip.start + 0.2,
+        trackId: newTrackId,
       };
       newId = copy.id;
+      const newTrack: Track = {
+        id: newTrackId,
+        name: copy.name,
+        type: clip.type,
+        visible: true,
+        locked: false,
+        muted: false,
+        solo: false,
+        clips: [copy],
+        volume: 1,
+      };
+      const insertAt = Math.max(0, comp.tracks.findIndex(t => t.id === clip.trackId) + 1);
+      const tracks = [...comp.tracks];
+      tracks.splice(insertAt, 0, newTrack);
       return {
-        ...updateComp(s, c => ({
-          ...c,
-          tracks: c.tracks.map(t =>
-            t.id === clip.trackId ? { ...t, clips: [...t.clips, copy] } : t
-          ),
-        })),
+        ...updateComp(s, c => ({ ...c, tracks })),
         selectedClipId: copy.id,
       };
     });

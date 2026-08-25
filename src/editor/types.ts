@@ -8,13 +8,29 @@ export type Easing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold' 
 
 export type ToolMode = 'pointer' | 'pen' | 'text' | 'shape';
 
-export type EffectType = 'blur' | 'brightness' | 'contrast' | 'saturate';
+export type EffectType = 'blur' | 'brightness' | 'contrast' | 'saturate' | 'grayscale' | 'opacity';
 
 export interface LayerEffect {
   id: string;
   type: EffectType;
-  amount: number; // blur: px; others: 0–200 where 100 = unchanged
+  amount: number; // blur: px; others: 0–200 where 100 = unchanged (opacity/grayscale 0–100)
 }
+
+export const EFFECT_DEFS: Record<EffectType, {
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  defaultAmount: number;
+  unit: string;
+}> = {
+  blur: { label: 'Blur', min: 0, max: 40, step: 0.5, defaultAmount: 8, unit: 'px' },
+  brightness: { label: 'Brightness', min: 0, max: 200, step: 1, defaultAmount: 100, unit: '%' },
+  contrast: { label: 'Contrast', min: 0, max: 200, step: 1, defaultAmount: 100, unit: '%' },
+  saturate: { label: 'Saturation', min: 0, max: 200, step: 1, defaultAmount: 100, unit: '%' },
+  grayscale: { label: 'Grayscale', min: 0, max: 100, step: 1, defaultAmount: 100, unit: '%' },
+  opacity: { label: 'Transparency', min: 0, max: 100, step: 1, defaultAmount: 60, unit: '%' },
+};
 
 export interface PathPoint {
   x: number;
@@ -519,6 +535,24 @@ function createTrack(type: LayerType, name: string, index: number): Track {
     clips: [],
     volume: 1,
   };
+}
+
+const LAYER_LABELS: Record<LayerType, string> = {
+  video: 'Video',
+  audio: 'Audio',
+  image: 'Image',
+  text: 'Text',
+  shape: 'Shape',
+  mesh3d: '3D',
+  effect: 'Effect',
+  path: 'Path',
+};
+
+export function nextClipName(comp: Composition, type: LayerType, assetName?: string): string {
+  if (assetName) return assetName.replace(/\.[^.]+$/, '');
+  const label = LAYER_LABELS[type] ?? type;
+  const n = comp.tracks.reduce((count, t) => count + t.clips.filter(c => c.type === type).length, 0) + 1;
+  return `${label} ${n}`;
 }
 
 export function createNewClip(
