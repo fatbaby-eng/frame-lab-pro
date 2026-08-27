@@ -1,11 +1,12 @@
 import { useMemo, useRef, useState } from 'react';
 import { useEditor } from '../EditorContext';
 import {
-  evalProp, findClip, isAnimated, keyframeBezier, TRANSFORM_PROP_KEYS,
+  evalProp, findClip, isAnimated, keyframeBezier,
+  MESH_PROP_DEFS, getAnimProp, isMeshColorKey, clipAnimKeys, ensureAnimProp,
 } from '../types';
-import type { AnimatedProperty, Transform } from '../types';
+import type { AnimatedProperty, AnimKey } from '../types';
 
-const COLORS: Partial<Record<keyof Transform, string>> = {
+const COLORS: Partial<Record<AnimKey, string>> = {
   x: '#38bdf8',
   y: '#a78bfa',
   scaleX: '#34d399',
@@ -14,11 +15,20 @@ const COLORS: Partial<Record<keyof Transform, string>> = {
   opacity: '#fbbf24',
   anchorX: '#94a3b8',
   anchorY: '#64748b',
+  meshRotX: '#f472b6',
+  meshRotY: '#e879f9',
+  meshRotZ: '#c084fc',
+  meshMetalness: '#67e8f9',
+  meshRoughness: '#5eead4',
+  meshLightAmbient: '#fde68a',
+  meshLightKey: '#fdba74',
+  meshLightFill: '#86efac',
 };
 
-const LABELS: Partial<Record<keyof Transform, string>> = {
+const LABELS: Partial<Record<AnimKey, string>> = {
   x: 'X', y: 'Y', scaleX: 'Scale X', scaleY: 'Scale Y',
   rotation: 'Rot', opacity: 'Opac', anchorX: 'Anc X', anchorY: 'Anc Y',
+  ...Object.fromEntries(MESH_PROP_DEFS.map(d => [d.key, d.label])),
 };
 
 type DragKind = 'key' | 'out' | 'in';
@@ -31,28 +41,33 @@ export default function CurveEditor({ width }: { width: number }) {
   const comp = project.compositions.find(c => c.id === project.activeCompositionId)!;
   const clip = selectedClipId ? findClip(comp, selectedClipId) : null;
 
-  const [solo, setSolo] = useState<keyof Transform | null>(null);
+  const [solo, setSolo] = useState<AnimKey | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{
-    key: keyof Transform;
+    key: AnimKey;
     time: number;
     kind: DragKind;
     value: number;
   } | null>(null);
 
+  const graphKeys = useMemo(() => {
+    if (!clip) return [] as AnimKey[];
+    return clipAnimKeys(clip).filter(k => !isMeshColorKey(k));
+  }, [clip]);
+
   const channels = useMemo(() => {
     if (!clip) return [];
-    return TRANSFORM_PROP_KEYS
-      .filter(k => isAnimated(clip.transform[k]) || selectedKeyframe?.key === k)
+    return graphKeys
+      .filter(k => isAnimated(getAnimProp(clip, k)) || selectedKeyframe?.key === k)
       .filter(k => !solo || solo === k);
-  }, [clip, selectedKeyframe, solo]);
+  }, [clip, selectedKeyframe, solo, graphKeys]);
 
   const valueRange = useMemo(() => {
     let min = Infinity;
     let max = -Infinity;
     if (!clip) return { min: 0, max: 1 };
-    for (const key of channels.length ? channels : TRANSFORM_PROP_KEYS) {
-      for (const kf of clip.transform[key]?.keyframes ?? []) {
+    for (const key of channels.length ? channels : graphKeys) {
+      for (const kf of getAnimProp(clip, key)?.keyframes ?? []) {
         min = Math.min(min, kf.value);
         max = Math.max(max, kf.value);
       }
@@ -64,7 +79,7 @@ export default function CurveEditor({ width }: { width: number }) {
     }
     const pad = (max - min) * 0.18;
     return { min: min - pad, max: max + pad };
-  }, [clip, channels]);
+  }, [clip, channels, graphKeys]);
 
   const H = 168;
   const padL = 0;
@@ -112,9 +127,9 @@ export default function CurveEditor({ width }: { width: number }) {
 
     const drag = dragRef.current;
     if (!drag) return;
-    const prop = clip.transform[drag.key];
-    const kf = prop.keyframes.find(k => Math.abs(k.time - drag.time) < 0.001);
-    if (!kf) return;
+    const prop = getAnimProp(clip, drag.key);
+    const kf = prop?.keyframes.find(k => Math.abs(k.time - drag.time) < 0.001);
+    if (!prop || !kf) return;
 
     if (drag.kind === 'key') {
       const nextTime = Math.max(0, Math.min(clip.duration, timeOf(px) - clip.start));
@@ -156,7 +171,7 @@ export default function CurveEditor({ width }: { width: number }) {
     if (!clip) return null;
     const thresh = 8;
     for (const key of channels) {
-      const kfs = clip.transform[key].keyframes;
+      const kfs = getAnimProp(clip, key)?.keyframes ?? [];
       for (let i = 0; i < kfs.length; i++) {
         const kf = kfs[i];
         const next = kfs[i + 1];
@@ -209,7 +224,7 @@ export default function CurveEditor({ width }: { width: number }) {
   return (
     <div className="border-b border-surface-700 bg-[#0c0c14] relative">
       <div className="absolute left-1 top-1 z-10 flex flex-col gap-0.5">
-        {TRANSFORM_PROP_KEYS.filter(k => isAnimated(clip.transform[k])).map(k => (
+        {graphKeys.filter(k => isAnimated(getAnimProp(clip, k))).map(k => (
           <button
             key={k}
             onClick={() => setSolo(s => s === k ? null : k)}
@@ -251,7 +266,7 @@ export default function CurveEditor({ width }: { width: number }) {
         />
 
         {channels.map(key => {
-          const prop = clip.transform[key];
+          const prop = getAnimProp(clip, key) ?? ensureAnimProp(clip, key);
           const color = COLORS[key] || '#818cf8';
           const kfs = prop.keyframes;
           return (

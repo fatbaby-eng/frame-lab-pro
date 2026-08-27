@@ -1,4 +1,4 @@
-import { evalProp } from './types';
+import { evalProp, nestedCompTime } from './types';
 import type { Asset, Clip, Composition, Project, Track } from './types';
 import { getMediaElement } from './mediaCache';
 
@@ -34,11 +34,40 @@ export function syncTransportAudio(
   time: number,
   playing: boolean
 ) {
-  const anySolo = comp.tracks.some(t => t.solo);
   const active = new Set<string>();
+  syncCompAudio(comp, project, time, playing, active, new Set());
+
+  for (const asset of project.assets) {
+    if (active.has(asset.id)) continue;
+    if (asset.type !== 'audio' && asset.type !== 'video') continue;
+    const el = getMediaElement(asset);
+    if (el instanceof HTMLMediaElement && !el.paused && !playing) el.pause();
+  }
+}
+
+function syncCompAudio(
+  comp: Composition,
+  project: Project,
+  time: number,
+  playing: boolean,
+  active: Set<string>,
+  ancestors: Set<string>,
+) {
+  if (ancestors.has(comp.id)) return;
+  const nextAncestors = new Set(ancestors);
+  nextAncestors.add(comp.id);
+  const anySolo = comp.tracks.some(t => t.solo);
 
   for (const track of comp.tracks) {
     for (const clip of track.clips) {
+      if (clip.type === 'comp' && clip.compositionId) {
+        if (time < clip.start || time >= clip.start + clip.duration) continue;
+        const inner = project.compositions.find(c => c.id === clip.compositionId);
+        if (inner) {
+          syncCompAudio(inner, project, nestedCompTime(clip, time), playing, active, nextAncestors);
+        }
+        continue;
+      }
       if (!clip.assetId) continue;
       const asset = project.assets.find(a => a.id === clip.assetId);
       if (!asset || (asset.type !== 'audio' && asset.type !== 'video')) continue;
@@ -69,13 +98,6 @@ export function syncTransportAudio(
         void el.play().catch(() => { /* autoplay lock — next user gesture */ });
       }
     }
-  }
-
-  for (const asset of project.assets) {
-    if (active.has(asset.id)) continue;
-    if (asset.type !== 'audio' && asset.type !== 'video') continue;
-    const el = getMediaElement(asset);
-    if (el instanceof HTMLMediaElement && !el.paused && !playing) el.pause();
   }
 }
 
@@ -132,31 +154,57 @@ export async function createExportAudioTrack(
   startTime: number,
   endTime: number
 ): Promise<MediaStreamTrack | null> {
-  const anySolo = comp.tracks.some(t => t.solo);
-  const jobs: { clip: Clip; track: Track; buffer: AudioBuffer }[] = [];
+  const jobs: { clip: Clip; track: Track; rootStart: number; rootEnd: number }[] = [];
 
-  for (const track of comp.tracks) {
-    for (const clip of track.clips) {
-      if (!clip.assetId) continue;
-      if (clip.type !== 'audio' && clip.type !== 'video') continue;
-      if (track.muted || (anySolo && !track.solo)) continue;
-      if (clip.start + clip.duration <= startTime || clip.start >= endTime) continue;
-      const asset = project.assets.find(a => a.id === clip.assetId);
-      if (!asset) continue;
-      const buffer = await decodeAudioAsset(asset);
-      if (!buffer) continue;
-      jobs.push({ clip, track, buffer });
+  const collect = (
+    host: Composition,
+    mapToRoot: (t: number) => number,
+    ancestors: Set<string>,
+  ) => {
+    if (ancestors.has(host.id)) return;
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(host.id);
+    const anySolo = host.tracks.some(t => t.solo);
+    for (const track of host.tracks) {
+      for (const clip of track.clips) {
+        const rootStart = mapToRoot(clip.start);
+        const rootEnd = mapToRoot(clip.start + clip.duration);
+        if (rootEnd <= startTime || rootStart >= endTime) continue;
+        if (clip.type === 'comp' && clip.compositionId) {
+          if (track.muted || (anySolo && !track.solo)) continue;
+          const inner = project.compositions.find(c => c.id === clip.compositionId);
+          if (inner) {
+            collect(inner, t => mapToRoot(clip.start + (t - clip.sourceStart)), nextAncestors);
+          }
+          continue;
+        }
+        if (!clip.assetId) continue;
+        if (clip.type !== 'audio' && clip.type !== 'video') continue;
+        if (track.muted || (anySolo && !track.solo)) continue;
+        jobs.push({ clip, track, rootStart, rootEnd });
+      }
     }
+  };
+  collect(comp, t => t, new Set());
+
+  const resolved: { clip: Clip; track: Track; buffer: AudioBuffer; rootStart: number; rootEnd: number }[] = [];
+  for (const job of jobs) {
+    if (!job.clip.assetId) continue;
+    const asset = project.assets.find(a => a.id === job.clip.assetId);
+    if (!asset) continue;
+    const buffer = await decodeAudioAsset(asset);
+    if (!buffer) continue;
+    resolved.push({ ...job, buffer });
   }
 
-  if (!jobs.length) return null;
+  if (!resolved.length) return null;
 
   const ctx = audioContext();
   if (ctx.state === 'suspended') await ctx.resume();
   const dest = ctx.createMediaStreamDestination();
   const t0 = ctx.currentTime + 0.05;
 
-  for (const { clip, track, buffer } of jobs) {
+  for (const { clip, track, buffer, rootStart, rootEnd } of resolved) {
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     const gain = ctx.createGain();
@@ -165,10 +213,10 @@ export async function createExportAudioTrack(
     source.connect(gain);
     gain.connect(dest);
 
-    const clipStart = Math.max(clip.start, startTime);
-    const clipEnd = Math.min(clip.start + clip.duration, endTime);
+    const clipStart = Math.max(rootStart, startTime);
+    const clipEnd = Math.min(rootEnd, endTime);
     const when = t0 + (clipStart - startTime);
-    const offset = clip.sourceStart + (clipStart - clip.start);
+    const offset = clip.sourceStart + (clipStart - rootStart);
     const dur = Math.max(0.01, clipEnd - clipStart);
     try {
       source.start(when, Math.max(0, offset), dur);

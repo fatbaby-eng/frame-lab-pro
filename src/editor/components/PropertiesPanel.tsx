@@ -1,22 +1,61 @@
 import { useEditor } from '../EditorContext';
 import {
-  evalProp, hasKeyframeAt, easingAt, COMP_PRESETS, findClip, isAnimated, wouldCreateParentCycle,
-  setKeyframe, makeAnimatedProperty, EFFECT_DEFS, MESH_PRIMITIVES,
+  evalProp, evalColorProp, hasKeyframeAt, easingAt, COMP_PRESETS, findClip, isAnimated, wouldCreateParentCycle,
+  EFFECT_DEFS, MESH_PRIMITIVES, MESH_PROP_DEFS, wouldCreateCompCycle,
+  ensureAnimProp, parseHexColor, hydrateTextStyle, TEXT_FONTS,
 } from '../types';
-import type { Transform, TextStyle, Easing, LayerEffect, EffectType, MeshShape } from '../types';
+import type { Transform, TextStyle, TextAlign, TextVAlign, Easing, LayerEffect, EffectType, MeshShape, MeshPropDef } from '../types';
 import {
   Type, Image, Video, Music, Box, Shapes, Sparkles, Trash2,
-  ChevronDown, ChevronRight, Link, Unlink, Diamond, Settings, Timer,
+  ChevronDown, ChevronRight, Link, Unlink, Diamond, Settings, Timer, Layers, Copy,
+  AlignVerticalJustifyStart, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd,
+  AlignHorizontalSpaceBetween, Bold, Italic, Underline, CaseSensitive,
 } from 'lucide-react';
-import { useState, useRef } from 'react';
+import { useState, useRef, type KeyboardEvent } from 'react';
+import AlignBar from './AlignBar';
 
 const EASINGS: Easing[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out', 'hold', 'bezier'];
+
+function stopKeys(e: KeyboardEvent) {
+  e.stopPropagation();
+}
+
+function CompositionNameField({
+  id,
+  name,
+  onRename,
+}: {
+  id: string;
+  name: string;
+  onRename: (name: string) => void;
+}) {
+  return (
+    <div>
+      <label htmlFor={id} className="text-[10px] text-slate-500 mb-1 block">Name</label>
+      <input
+        id={id}
+        type="text"
+        value={name}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={e => onRename(e.target.value)}
+        onKeyDown={stopKeys}
+        onBlur={e => {
+          const next = e.target.value.trim();
+          if (!next) onRename('Untitled');
+        }}
+        className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none"
+      />
+    </div>
+  );
+}
 
 export default function PropertiesPanel() {
   const {
     state, setTransformValues, updateClipProperty, deleteClip, showToast,
     toggleKeyframe, toggleAnimated, setKeyframeEasing, updateComposition, setCompositionDuration,
-    setAutoKey, setTrackVolume,
+    setAutoKey, setTrackVolume, setActiveComposition, duplicateComposition, renameComposition,
+    alignClipToComp,
   } = useEditor();
   const { selectedClipId, autoKey } = state;
 
@@ -36,14 +75,11 @@ export default function PropertiesPanel() {
           <h2 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Composition</h2>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-3">
-          <div>
-            <label className="text-[10px] text-slate-500 mb-1 block">Name</label>
-            <input
-              value={comp.name}
-              onChange={e => updateComposition({ name: e.target.value })}
-              className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none"
-            />
-          </div>
+          <CompositionNameField
+            id="active-comp-name"
+            name={comp.name}
+            onRename={next => renameComposition(comp.id, next)}
+          />
           <div>
             <label className="text-[10px] text-slate-500 mb-1 block">Preset</label>
             <div className="grid grid-cols-2 gap-1">
@@ -87,7 +123,18 @@ export default function PropertiesPanel() {
               className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer"
             />
           </div>
-          <p className="text-[10px] text-slate-500 pt-4">Select a clip on the timeline to edit layer properties. Double-click a clip to show keyframes.</p>
+          <button
+            type="button"
+            onClick={() => {
+              const id = duplicateComposition(comp.id);
+              if (id) showToast('Duplicated composition');
+            }}
+            className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded bg-surface-700 hover:bg-surface-600 text-[10px] text-slate-300 border border-surface-600"
+          >
+            <Copy size={11} />
+            Duplicate composition
+          </button>
+          <p className="text-[10px] text-slate-500 pt-2">Select a clip on the timeline to edit layer properties. Nested compositions keep their own layers and properties. Double-click a nested layer to open it.</p>
         </div>
       </div>
     );
@@ -119,6 +166,7 @@ export default function PropertiesPanel() {
       case 'audio': return <Music size={14} />;
       case 'mesh3d': return <Box size={14} />;
       case 'shape': return <Shapes size={14} />;
+      case 'comp': return <Layers size={14} />;
       default: return <Sparkles size={14} />;
     }
   };
@@ -126,6 +174,9 @@ export default function PropertiesPanel() {
   const shapeWidth = Math.round(100 * scaleX);
   const shapeHeight = Math.round(100 * scaleY);
   const effects = clip.effects ?? [];
+  const nestedSource = clip.type === 'comp'
+    ? state.project.compositions.find(c => c.id === clip.compositionId)
+    : undefined;
 
   const addEffect = (type: EffectType) => {
     if (effects.some(e => e.type === type)) return;
@@ -152,10 +203,14 @@ export default function PropertiesPanel() {
         <div className="flex items-center gap-2 mb-1">
           <span className="text-accent-light shrink-0">{iconForType()}</span>
           <input
+            type="text"
             value={clip.name}
+            autoComplete="off"
+            spellCheck={false}
             onChange={e => updateClipProperty(clip.id, 'name', e.target.value)}
-            className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-white outline-none border-b border-transparent focus:border-accent truncate"
-            title="Rename clip"
+            onKeyDown={stopKeys}
+            className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-white outline-none border-b border-transparent focus:border-accent"
+            title="Rename layer"
           />
         </div>
         <p className="text-[10px] text-slate-500">{clip.type.toUpperCase()} · {clip.duration.toFixed(2)}s</p>
@@ -182,6 +237,10 @@ export default function PropertiesPanel() {
           </button>
           {transformOpen && (
             <div className="px-3 pb-3 space-y-2.5 min-w-0">
+              <div>
+                <label className="text-[10px] text-slate-500 mb-1 block">Align to page</label>
+                <AlignBar onAlign={align => alignClipToComp(clip.id, align)} />
+              </div>
               <PropRow label="Position X" value={x} min={-2000} max={2000} step={1} onChange={v => updateValue('x', v)} keyed={hasKeyframeAt(clip.transform.x, t)} animated={isAnimated(clip.transform.x)} onKeyframe={() => toggleKeyframe(clip.id, 'x')} onToggleAnimated={() => toggleAnimated(clip.id, 'x')} easing={easingAt(clip.transform.x, t)} onEasing={e => setKeyframeEasing(clip.id, 'x', e)} />
               <PropRow label="Position Y" value={y} min={-2000} max={2000} step={1} onChange={v => updateValue('y', v)} keyed={hasKeyframeAt(clip.transform.y, t)} animated={isAnimated(clip.transform.y)} onKeyframe={() => toggleKeyframe(clip.id, 'y')} onToggleAnimated={() => toggleAnimated(clip.id, 'y')} easing={easingAt(clip.transform.y, t)} onEasing={e => setKeyframeEasing(clip.id, 'y', e)} />
               <PropRow label="Anchor X" value={anchorX} min={-500} max={500} step={1} onChange={v => updateValue('anchorX', v)} keyed={!!clip.transform.anchorX && hasKeyframeAt(clip.transform.anchorX, t)} animated={isAnimated(clip.transform.anchorX)} onKeyframe={() => toggleKeyframe(clip.id, 'anchorX')} onToggleAnimated={() => toggleAnimated(clip.id, 'anchorX')} />
@@ -222,7 +281,23 @@ export default function PropertiesPanel() {
           )}
         </div>
 
-        {clip.type === 'text' && clip.textStyle && (
+        {clip.type === 'text' && clip.textStyle && (() => {
+          const ts = hydrateTextStyle(clip.textStyle);
+          const patchStyle = (partial: Partial<TextStyle>) => {
+            updateClipProperty(clip.id, 'textStyle', { ...ts, ...partial });
+          };
+          const hAligns: { id: TextAlign; Icon: typeof Bold; title: string }[] = [
+            { id: 'left', Icon: AlignVerticalJustifyStart, title: 'Align left' },
+            { id: 'center', Icon: AlignVerticalJustifyCenter, title: 'Align center' },
+            { id: 'right', Icon: AlignVerticalJustifyEnd, title: 'Align right' },
+            { id: 'justify', Icon: AlignHorizontalSpaceBetween, title: 'Justify' },
+          ];
+          const vAligns: { id: TextVAlign; label: string }[] = [
+            { id: 'top', label: 'Top' },
+            { id: 'middle', label: 'Middle' },
+            { id: 'bottom', label: 'Bottom' },
+          ];
+          return (
           <div className="border-b border-surface-700">
             <button onClick={() => setStyleOpen(!styleOpen)} className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-slate-300 hover:text-white">
               <span>Text Style</span>
@@ -232,40 +307,122 @@ export default function PropertiesPanel() {
               <div className="px-3 pb-3 space-y-2">
                 <div>
                   <label className="text-[10px] text-slate-500 mb-1 block">Content</label>
-                  <input value={clip.textContent || ''} onChange={e => updateClipProperty(clip.id, 'textContent', e.target.value)} className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none" />
+                  <textarea
+                    value={clip.textContent || ''}
+                    rows={4}
+                    onChange={e => updateClipProperty(clip.id, 'textContent', e.target.value)}
+                    onKeyDown={stopKeys}
+                    className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none resize-y min-h-[4.5rem]"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 mb-1 block">Font</label>
+                  <select
+                    value={ts.fontFamily}
+                    onChange={e => patchStyle({ fontFamily: e.target.value })}
+                    className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none"
+                  >
+                    {!TEXT_FONTS.some(f => f.value === ts.fontFamily) && (
+                      <option value={ts.fontFamily}>{ts.fontFamily}</option>
+                    )}
+                    {TEXT_FONTS.map(f => (
+                      <option key={f.value} value={f.value}>{f.label}</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="flex gap-2">
                   <div className="flex-1">
-                    <label className="text-[10px] text-slate-500 mb-1 block">Font Size</label>
-                    <input type="number" value={clip.textStyle.fontSize} onChange={e => { const style: TextStyle = { ...clip.textStyle!, fontSize: parseInt(e.target.value) || 48 }; updateClipProperty(clip.id, 'textStyle', style); }} className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none" />
+                    <label className="text-[10px] text-slate-500 mb-1 block">Size</label>
+                    <input type="number" value={ts.fontSize} onChange={e => patchStyle({ fontSize: parseInt(e.target.value) || 48 })} className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none" />
                   </div>
                   <div className="flex-1">
                     <label className="text-[10px] text-slate-500 mb-1 block">Color</label>
-                    <input type="color" value={clip.textStyle.color} onChange={e => { const style: TextStyle = { ...clip.textStyle!, color: e.target.value }; updateClipProperty(clip.id, 'textStyle', style); }} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
+                    <input type="color" value={ts.color} onChange={e => patchStyle({ color: e.target.value })} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
                   </div>
                 </div>
                 <div>
-                  <label className="text-[10px] text-slate-500 mb-1 block">Align</label>
+                  <label className="text-[10px] text-slate-500 mb-1 block">Paragraph align</label>
                   <div className="flex gap-1 bg-surface-700 rounded p-0.5">
-                    {(['left', 'center', 'right'] as const).map(a => (
-                      <button key={a} onClick={() => { const style: TextStyle = { ...clip.textStyle!, align: a }; updateClipProperty(clip.id, 'textStyle', style); }} className={`flex-1 py-0.5 text-[10px] rounded capitalize ${clip.textStyle!.align === a ? 'bg-accent text-white' : 'text-slate-400 hover:text-white'}`}>{a}</button>
+                    {hAligns.map(a => (
+                      <button
+                        key={a.id}
+                        type="button"
+                        title={a.title}
+                        onClick={() => patchStyle({ align: a.id })}
+                        className={`flex-1 py-1 rounded flex items-center justify-center ${ts.align === a.id ? 'bg-accent text-white' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        <a.Icon size={12} />
+                      </button>
                     ))}
                   </div>
                 </div>
-                <div className="flex gap-2">
+                <div>
+                  <label className="text-[10px] text-slate-500 mb-1 block">Vertical align</label>
+                  <div className="flex gap-1 bg-surface-700 rounded p-0.5">
+                    {vAligns.map(a => (
+                      <button
+                        key={a.id}
+                        type="button"
+                        onClick={() => patchStyle({ valign: a.id })}
+                        className={`flex-1 py-0.5 text-[10px] rounded capitalize ${ts.valign === a.id ? 'bg-accent text-white' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-1">
                   <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer">
-                    <input type="checkbox" checked={clip.textStyle.bold} onChange={e => { const style: TextStyle = { ...clip.textStyle!, bold: e.target.checked }; updateClipProperty(clip.id, 'textStyle', style); }} className="accent-accent" />
-                    Bold
+                    <input type="checkbox" checked={ts.bold} onChange={e => patchStyle({ bold: e.target.checked })} className="accent-accent" />
+                    <Bold size={10} /> Bold
                   </label>
                   <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer">
-                    <input type="checkbox" checked={clip.textStyle.italic} onChange={e => { const style: TextStyle = { ...clip.textStyle!, italic: e.target.checked }; updateClipProperty(clip.id, 'textStyle', style); }} className="accent-accent" />
-                    Italic
+                    <input type="checkbox" checked={ts.italic} onChange={e => patchStyle({ italic: e.target.checked })} className="accent-accent" />
+                    <Italic size={10} /> Italic
+                  </label>
+                  <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer">
+                    <input type="checkbox" checked={ts.underline} onChange={e => patchStyle({ underline: e.target.checked })} className="accent-accent" />
+                    <Underline size={10} /> Underline
+                  </label>
+                  <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer">
+                    <input type="checkbox" checked={ts.allCaps} onChange={e => patchStyle({ allCaps: e.target.checked })} className="accent-accent" />
+                    <CaseSensitive size={10} /> All caps
                   </label>
                 </div>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="text-[10px] text-slate-500 mb-1 block">Line height</label>
+                    <input type="number" min={0.5} max={4} step={0.05} value={ts.lineHeight} onChange={e => patchStyle({ lineHeight: parseFloat(e.target.value) || 1.2 })} className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-[10px] text-slate-500 mb-1 block">Letter spacing</label>
+                    <input type="number" min={-20} max={80} step={0.5} value={ts.letterSpacing} onChange={e => patchStyle({ letterSpacing: parseFloat(e.target.value) || 0 })} className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none" />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="text-[10px] text-slate-500 mb-1 block">Paragraph gap</label>
+                    <input type="number" min={0} max={200} step={1} value={ts.paragraphGap} onChange={e => patchStyle({ paragraphGap: parseFloat(e.target.value) || 0 })} className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-[10px] text-slate-500 mb-1 block">Box width</label>
+                    <input type="number" min={0} max={4000} step={10} value={ts.boxWidth} onChange={e => patchStyle({ boxWidth: Math.max(0, parseInt(e.target.value) || 0) })} className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none" title="0 = no wrapping" />
+                  </div>
+                </div>
+                <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={ts.boxWidth > 0}
+                    onChange={e => patchStyle({ boxWidth: e.target.checked ? (ts.boxWidth > 0 ? ts.boxWidth : 800) : 0 })}
+                    className="accent-accent"
+                  />
+                  Wrap to box
+                </label>
               </div>
             )}
           </div>
-        )}
+          );
+        })()}
 
         {clip.type === 'shape' && (
           <div className="border-b border-surface-700">
@@ -289,6 +446,62 @@ export default function PropertiesPanel() {
                   <input type="number" value={clip.shapeStroke || 0} onChange={e => updateClipProperty(clip.id, 'shapeStroke', parseInt(e.target.value) || 0)} className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none" />
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {clip.type === 'comp' && (
+          <div className="border-b border-surface-700">
+            <div className="px-3 py-2 text-xs font-medium text-slate-300">Nested Composition</div>
+            <div className="px-3 pb-3 space-y-2">
+              {nestedSource && (
+                <CompositionNameField
+                  id="nested-comp-name"
+                  name={nestedSource.name}
+                  onRename={next => renameComposition(nestedSource.id, next)}
+                />
+              )}
+              <div>
+                <label className="text-[10px] text-slate-500 mb-1 block">Source</label>
+                <select
+                  value={clip.compositionId || ''}
+                  onChange={e => {
+                    const nextId = e.target.value;
+                    if (!nextId) return;
+                    if (wouldCreateCompCycle(state.project, comp.id, nextId)) {
+                      showToast('That would create a nest loop');
+                      return;
+                    }
+                    const nested = state.project.compositions.find(c => c.id === nextId);
+                    updateClipProperty(clip.id, 'compositionId', nextId);
+                    if (nested) updateClipProperty(clip.id, 'name', nested.name);
+                  }}
+                  className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none"
+                >
+                  {state.project.compositions
+                    .filter(c => !wouldCreateCompCycle(state.project, comp.id, c.id) || c.id === clip.compositionId)
+                    .map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                </select>
+              </div>
+              {(() => {
+                const nested = state.project.compositions.find(c => c.id === clip.compositionId);
+                if (!nested) return <p className="text-[9px] text-slate-500">Pick a composition to nest.</p>;
+                return (
+                  <p className="text-[9px] text-slate-500">{nested.width}×{nested.height} · {nested.duration.toFixed(1)}s · {nested.tracks.reduce((n, t) => n + t.clips.length, 0)} layers</p>
+                );
+              })()}
+              <button
+                type="button"
+                disabled={!clip.compositionId}
+                onClick={() => {
+                  if (clip.compositionId) setActiveComposition(clip.compositionId);
+                }}
+                className="w-full px-2 py-1.5 rounded bg-accent/20 hover:bg-accent text-accent-light hover:text-white text-[10px] disabled:opacity-40"
+              >
+                Open composition
+              </button>
             </div>
           </div>
         )}
@@ -337,52 +550,24 @@ export default function PropertiesPanel() {
               )}
 
               {clip.meshShape !== 'model' && (
-                <RangeField
-                  label="Segments"
-                  value={clip.meshSegments ?? 32}
-                  min={3}
-                  max={64}
-                  step={1}
-                  onChange={v => updateClipProperty(clip.id, 'meshSegments', v)}
-                />
+                <MeshAnimRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshSegments')!} />
               )}
 
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-end">
                 <div className="flex-1">
-                  <label className="text-[10px] text-slate-500 mb-1 block">Color</label>
-                  <input type="color" value={clip.meshColor || '#6366f1'} onChange={e => updateClipProperty(clip.id, 'meshColor', e.target.value)} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
+                  <MeshColorRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshColor')!} />
                 </div>
-                <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer pt-4">
+                <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer pb-1">
                   <input type="checkbox" checked={clip.meshWireframe || false} onChange={e => updateClipProperty(clip.id, 'meshWireframe', e.target.checked)} className="accent-accent" />
                   Wireframe
                 </label>
               </div>
 
-              <RangeField label="Metalness" value={clip.meshMetalness ?? 0.38} min={0} max={1} step={0.01} onChange={v => updateClipProperty(clip.id, 'meshMetalness', v)} />
-              <RangeField label="Roughness" value={clip.meshRoughness ?? 0.32} min={0} max={1} step={0.01} onChange={v => updateClipProperty(clip.id, 'meshRoughness', v)} />
-
-              {(['meshRotX', 'meshRotY', 'meshRotZ'] as const).map(key => {
-                const prop = clip[key] ?? makeAnimatedProperty(key === 'meshRotX' ? 18 : 0);
-                const val = evalProp(prop, t);
-                return (
-                  <div key={key}>
-                    <label className="text-[10px] text-slate-500 mb-1 block">{key === 'meshRotX' ? 'Rotate X' : key === 'meshRotY' ? 'Rotate Y' : 'Rotate Z'}</label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="range" min={-360} max={360} step={1} value={val}
-                        onChange={e => {
-                          const next = (autoKey || isAnimated(prop))
-                            ? setKeyframe(prop, t, parseFloat(e.target.value))
-                            : { keyframes: [{ ...prop.keyframes[0], value: parseFloat(e.target.value) }] };
-                          updateClipProperty(clip.id, key, next);
-                        }}
-                        className="flex-1 accent-accent h-4"
-                      />
-                      <span className="text-[10px] text-slate-400 w-8 text-right">{Math.round(val)}</span>
-                    </div>
-                  </div>
-                );
-              })}
+              <MeshAnimRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshMetalness')!} />
+              <MeshAnimRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshRoughness')!} />
+              {MESH_PROP_DEFS.filter(d => d.key === 'meshRotX' || d.key === 'meshRotY' || d.key === 'meshRotZ').map(def => (
+                <MeshAnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
+              ))}
 
               <div className="pt-1 border-t border-surface-700/60">
                 <label className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5 block">Texture mapping</label>
@@ -397,30 +582,24 @@ export default function PropertiesPanel() {
                   ))}
                 </select>
                 <p className="text-[9px] text-slate-500 mb-2">Import an image, then map it onto this object. Use Plane for a photo card.</p>
-                <RangeField label="Repeat U" value={clip.meshMapRepeatU ?? 1} min={0.1} max={8} step={0.1} onChange={v => updateClipProperty(clip.id, 'meshMapRepeatU', v)} />
-                <RangeField label="Repeat V" value={clip.meshMapRepeatV ?? 1} min={0.1} max={8} step={0.1} onChange={v => updateClipProperty(clip.id, 'meshMapRepeatV', v)} />
-                <RangeField label="Offset U" value={clip.meshMapOffsetU ?? 0} min={-1} max={1} step={0.01} onChange={v => updateClipProperty(clip.id, 'meshMapOffsetU', v)} />
-                <RangeField label="Offset V" value={clip.meshMapOffsetV ?? 0} min={-1} max={1} step={0.01} onChange={v => updateClipProperty(clip.id, 'meshMapOffsetV', v)} />
-                <RangeField label="Map rotation" value={clip.meshMapRotation ?? 0} min={-180} max={180} step={1} onChange={v => updateClipProperty(clip.id, 'meshMapRotation', v)} />
+                {MESH_PROP_DEFS.filter(d => d.group === 'texture').map(def => (
+                  <MeshAnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
+                ))}
               </div>
 
               <div className="pt-1 border-t border-surface-700/60">
                 <label className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5 block">Lighting</label>
                 <div className="flex gap-2 mb-2">
                   <div className="flex-1">
-                    <label className="text-[10px] text-slate-500 mb-1 block">Ambient</label>
-                    <input type="color" value={clip.meshLightAmbientColor || '#ffffff'} onChange={e => updateClipProperty(clip.id, 'meshLightAmbientColor', e.target.value)} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
+                    <MeshColorRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshLightAmbientColor')!} />
                   </div>
                   <div className="flex-1">
-                    <label className="text-[10px] text-slate-500 mb-1 block">Key light</label>
-                    <input type="color" value={clip.meshLightKeyColor || '#ffffff'} onChange={e => updateClipProperty(clip.id, 'meshLightKeyColor', e.target.value)} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
+                    <MeshColorRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshLightKeyColor')!} />
                   </div>
                 </div>
-                <RangeField label="Ambient" value={clip.meshLightAmbient ?? 0.85} min={0} max={2} step={0.05} onChange={v => updateClipProperty(clip.id, 'meshLightAmbient', v)} />
-                <RangeField label="Key" value={clip.meshLightKey ?? 1.15} min={0} max={3} step={0.05} onChange={v => updateClipProperty(clip.id, 'meshLightKey', v)} />
-                <RangeField label="Fill" value={clip.meshLightFill ?? 0.45} min={0} max={2} step={0.05} onChange={v => updateClipProperty(clip.id, 'meshLightFill', v)} />
-                <RangeField label="Azimuth" value={clip.meshLightAzimuth ?? 35} min={0} max={360} step={1} onChange={v => updateClipProperty(clip.id, 'meshLightAzimuth', v)} />
-                <RangeField label="Elevation" value={clip.meshLightElevation ?? 40} min={-90} max={90} step={1} onChange={v => updateClipProperty(clip.id, 'meshLightElevation', v)} />
+                {MESH_PROP_DEFS.filter(d => d.group === 'light' && !d.color).map(def => (
+                  <MeshAnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
+                ))}
               </div>
             </div>
           </div>
@@ -588,6 +767,73 @@ export default function PropertiesPanel() {
   );
 }
 
+function MeshAnimRow({ clipId, clipTime, def }: { clipId: string; clipTime: number; def: MeshPropDef }) {
+  const { state, setAnimValue, toggleKeyframe, toggleAnimated, setKeyframeEasing } = useEditor();
+  const comp = state.project.compositions.find(c => c.id === state.project.activeCompositionId)!;
+  const clip = findClip(comp, clipId);
+  if (!clip) return null;
+  const prop = ensureAnimProp(clip, def.key);
+  const value = evalProp(prop, clipTime);
+  return (
+    <PropRow
+      label={def.label}
+      value={value}
+      min={def.min}
+      max={def.max}
+      step={def.step}
+      onChange={v => setAnimValue(clipId, def.key, v)}
+      keyed={hasKeyframeAt(prop, clipTime)}
+      animated={isAnimated(prop)}
+      onKeyframe={() => toggleKeyframe(clipId, def.key)}
+      onToggleAnimated={() => toggleAnimated(clipId, def.key)}
+      easing={easingAt(prop, clipTime)}
+      onEasing={e => setKeyframeEasing(clipId, def.key, e)}
+    />
+  );
+}
+
+function MeshColorRow({ clipId, clipTime, def }: { clipId: string; clipTime: number; def: MeshPropDef }) {
+  const { state, setAnimValue, toggleKeyframe, toggleAnimated, setKeyframeEasing } = useEditor();
+  const comp = state.project.compositions.find(c => c.id === state.project.activeCompositionId)!;
+  const clip = findClip(comp, clipId);
+  if (!clip) return null;
+  const prop = ensureAnimProp(clip, def.key);
+  const hex = evalColorProp(prop, clipTime);
+  const keyed = hasKeyframeAt(prop, clipTime);
+  const animated = isAnimated(prop);
+  const easing = easingAt(prop, clipTime);
+  return (
+    <div className="min-w-0 space-y-1">
+      <div className="flex items-center gap-1 min-w-0">
+        <button
+          onClick={() => toggleAnimated(clipId, def.key)}
+          className={`w-4 h-4 shrink-0 flex items-center justify-center ${animated ? 'text-accent-light' : 'text-slate-600 hover:text-slate-300'}`}
+          title={animated ? 'Disable animation' : 'Enable animation'}
+        >
+          <Timer size={10} />
+        </button>
+        <label className="text-[10px] text-slate-400 min-w-0 flex-1 truncate">{def.label}</label>
+        <KfButton active={keyed} onClick={() => toggleKeyframe(clipId, def.key)} />
+      </div>
+      <input
+        type="color"
+        value={hex}
+        onChange={e => setAnimValue(clipId, def.key, parseHexColor(e.target.value))}
+        className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer"
+      />
+      {keyed && (
+        <select
+          value={easing}
+          onChange={e => setKeyframeEasing(clipId, def.key, e.target.value as Easing)}
+          className="w-full px-1 py-0.5 rounded bg-surface-700 border border-surface-600 text-[9px] text-slate-300 outline-none"
+        >
+          {EASINGS.map(es => <option key={es} value={es}>{es}</option>)}
+        </select>
+      )}
+    </div>
+  );
+}
+
 function KfButton({ active, onClick }: { active: boolean; onClick: () => void }) {
   return (
     <button
@@ -680,36 +926,6 @@ function PropRow({ label, value, min, max, step, onChange, onKeyframe, onToggleA
           {EASINGS.map(es => <option key={es} value={es}>{es}</option>)}
         </select>
       )}
-    </div>
-  );
-}
-
-function RangeField({
-  label, value, min, max, step, onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  onChange: (v: number) => void;
-}) {
-  const decimals = step < 1 ? 2 : 0;
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-0.5">
-        <label className="text-[10px] text-slate-500">{label}</label>
-        <span className="text-[10px] text-slate-400 tabular-nums">{Number(value.toFixed(decimals))}</span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={e => onChange(parseFloat(e.target.value))}
-        className="w-full accent-accent h-4"
-      />
     </div>
   );
 }

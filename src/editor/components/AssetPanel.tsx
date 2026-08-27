@@ -1,10 +1,11 @@
 import { useRef, useCallback } from 'react';
 import { useEditor } from '../EditorContext';
 import type { Asset, LayerType } from '../types';
+import { wouldCreateCompCycle, makeAnimatedProperty, parseHexColor } from '../types';
 import { analyzeAudioAsset } from '../audioEngine';
 import {
   Upload, Image, Video, Music, FileText, Box, Trash2, Plus,
-  Film, PenTool,
+  Film, PenTool, Layers,
 } from 'lucide-react';
 
 const typeIcons: Record<LayerType, typeof Image> = {
@@ -16,6 +17,7 @@ const typeIcons: Record<LayerType, typeof Image> = {
   mesh3d: Box,
   effect: Film,
   path: PenTool,
+  comp: Layers,
 };
 
 function is3dFile(file: File): boolean {
@@ -32,7 +34,7 @@ function layerTypeForFile(file: File): LayerType {
 }
 
 export default function AssetPanel() {
-  const { state, addAsset, deleteAsset, addClip, showToast, updateAsset } = useEditor();
+  const { state, addAsset, deleteAsset, addClip, showToast, updateAsset, addCompositionAsLayer, setActiveComposition } = useEditor();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -114,7 +116,10 @@ export default function AssetPanel() {
     const start = state.currentTime;
     const duration = asset.duration || 5;
     if (asset.type === 'mesh3d') {
-      addClip(undefined, 'mesh3d', start, duration, asset.id, undefined, { meshShape: 'model', meshColor: '#ffffff' });
+      addClip(undefined, 'mesh3d', start, duration, asset.id, undefined, {
+        meshShape: 'model',
+        meshColor: makeAnimatedProperty(parseHexColor('#ffffff')),
+      });
       return;
     }
     addClip(undefined, asset.type, start, duration, asset.id);
@@ -196,8 +201,55 @@ export default function AssetPanel() {
           <AssetSection title="3D Models" assets={assetsByType('mesh3d')} onAdd={addToTimeline} onDelete={deleteAsset} />
         )}
 
-        {state.project.assets.length === 0 && (
-          <div className="text-center py-8 text-slate-500">
+        <div>
+          <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1 px-1">Compositions</div>
+          <div className="space-y-1">
+            {state.project.compositions.map(c => {
+              const isActive = c.id === state.project.activeCompositionId;
+              const canNest = !wouldCreateCompCycle(state.project, state.project.activeCompositionId, c.id);
+              return (
+                <div
+                  key={c.id}
+                  className={`group flex items-center gap-2 p-1.5 rounded transition-colors ${isActive ? 'bg-accent/15' : 'bg-surface-700/50 hover:bg-surface-700'}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setActiveComposition(c.id)}
+                    className="w-8 h-8 rounded bg-surface-600 flex items-center justify-center shrink-0"
+                    title="Open composition"
+                  >
+                    <Layers size={14} className="text-accent-light" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveComposition(c.id)}
+                    className="flex-1 min-w-0 text-left"
+                  >
+                    <div className="text-[10px] text-slate-300 truncate">{c.name}</div>
+                    <div className="text-[9px] text-slate-500">{c.width}×{c.height} · {c.duration.toFixed(1)}s{isActive ? ' · editing' : ''}</div>
+                  </button>
+                  {canNest && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id = addCompositionAsLayer(c.id);
+                        if (id) showToast(`Nested ${c.name}`);
+                        else showToast('Cannot nest that composition here');
+                      }}
+                      className="opacity-70 group-hover:opacity-100 w-5 h-5 rounded bg-accent/20 hover:bg-accent text-accent-light hover:text-white flex items-center justify-center transition-all"
+                      title="Add as nested layer"
+                    >
+                      <Plus size={10} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {state.project.assets.length === 0 && state.project.compositions.length <= 1 && (
+          <div className="text-center py-6 text-slate-500">
             <Image size={24} className="mx-auto mb-2 opacity-20" />
             <p className="text-[10px]">Drop files here or click Import</p>
             <p className="text-[9px] mt-1 opacity-70">Images, video, audio, GLB, GLTF, OBJ</p>

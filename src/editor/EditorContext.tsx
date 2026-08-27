@@ -4,14 +4,16 @@ import {
 } from 'react';
 import type {
   Project, Composition, Track, Clip, Asset, Transform, LayerType, ToolMode,
-  AnimatedProperty, Easing, Keyframe,
+  AnimatedProperty, Easing, Keyframe, AnimKey, CompAlign,
 } from './types';
 import {
-  createDefaultComposition, createNewClip, setKeyframe, removeKeyframe,
-  hasKeyframeAt, findClip, evalProp, moveKeyframe as moveKeyframeOnProp,
-  TRANSFORM_PROP_KEYS, isAnimated, applyBezierToKeyframe, hydrateAnimatedProperty,
-  newKeyframeId, nextClipName,
+  createDefaultComposition, createEmptyComposition, createNewClip, setKeyframe, removeKeyframe,
+  hasKeyframeAt, findClip, evalProp, evalColorProp, parseHexColor, moveKeyframe as moveKeyframeOnProp,
+  TRANSFORM_PROP_KEYS, isAnimated, applyBezierToKeyframe, hydrateAnimatedProperty, hydrateTextStyle,
+  newKeyframeId, nextClipName, wouldCreateCompCycle, compositionIsReferenced,
+  ensureMeshAnimProps, ensureAnimProp, getAnimProp, withAnimProp, clipAnimKeys, isMeshColorKey,
 } from './types';
+import { alignedLocalPosition } from './render';
 
 const AUTOSAVE_KEY = 'framelab-autosave-v3';
 
@@ -31,7 +33,7 @@ export interface EditorState {
   canUndo: boolean;
   canRedo: boolean;
   expandedClipId: string | null;
-  selectedKeyframe: { clipId: string; key: keyof Transform; time: number } | null;
+  selectedKeyframe: { clipId: string; key: AnimKey; time: number } | null;
 }
 
 interface EditorContextType {
@@ -65,14 +67,16 @@ interface EditorContextType {
   updateClipProperty: (clipId: string, key: string, value: unknown) => void;
   setTransformValue: (clipId: string, key: keyof Transform, value: number, easing?: Easing) => void;
   setTransformValues: (clipId: string, values: Partial<Record<keyof Transform, number>>, easing?: Easing) => void;
-  toggleKeyframe: (clipId: string, key: keyof Transform, atCompTime?: number) => void;
-  toggleKeyframes: (clipId: string, keys: (keyof Transform)[], atCompTime?: number) => void;
-  toggleAnimated: (clipId: string, key: keyof Transform) => void;
-  moveKeyframe: (clipId: string, key: keyof Transform, fromTime: number, toTime: number) => void;
+  setAnimValue: (clipId: string, key: AnimKey, value: number, easing?: Easing) => void;
+  toggleKeyframe: (clipId: string, key: AnimKey, atCompTime?: number) => void;
+  toggleKeyframes: (clipId: string, keys: AnimKey[], atCompTime?: number) => void;
+  toggleAnimated: (clipId: string, key: AnimKey) => void;
+  moveKeyframe: (clipId: string, key: AnimKey, fromTime: number, toTime: number) => void;
   patchTransform: (clipId: string, patch: Partial<Transform>) => void;
-  removeKeyframeAt: (clipId: string, key: keyof Transform, time: number) => void;
-  setKeyframeEasing: (clipId: string, key: keyof Transform, easing: Easing) => void;
-  patchKeyframe: (clipId: string, key: keyof Transform, time: number, patch: Partial<Keyframe>) => void;
+  patchAnim: (clipId: string, patch: Partial<Record<AnimKey, AnimatedProperty>>) => void;
+  removeKeyframeAt: (clipId: string, key: AnimKey, time: number) => void;
+  setKeyframeEasing: (clipId: string, key: AnimKey, easing: Easing) => void;
+  patchKeyframe: (clipId: string, key: AnimKey, time: number, patch: Partial<Keyframe>) => void;
   setTrackVolume: (trackId: string, volume: number) => void;
   selectKeyframe: (kf: EditorState['selectedKeyframe']) => void;
   jumpKeyframe: (direction: number) => void;
@@ -82,6 +86,7 @@ interface EditorContextType {
   copyClip: (clipId: string) => void;
   pasteClip: () => void;
   nudgeClip: (clipId: string, dx: number, dy: number) => void;
+  alignClipToComp: (clipId: string, align: CompAlign) => void;
   toggleExpanded: (clipId?: string) => void;
   // Track operations
   toggleTrackVisibility: (trackId: string) => void;
@@ -99,6 +104,7 @@ interface EditorContextType {
   setProjectName: (name: string) => void;
   setCompositionDuration: (duration: number) => void;
   updateComposition: (patch: Partial<Composition>) => void;
+  renameComposition: (id: string, name: string) => void;
   newProject: () => void;
   saveProjectFile: () => Promise<void>;
   loadProjectFile: (file: File) => Promise<void>;
@@ -107,6 +113,11 @@ interface EditorContextType {
   redo: () => void;
   // Composition
   getActiveComposition: () => Composition;
+  setActiveComposition: (id: string) => void;
+  addComposition: (name?: string) => string;
+  duplicateComposition: (id: string) => string | null;
+  deleteComposition: (id: string) => boolean;
+  addCompositionAsLayer: (compositionId: string) => string | null;
   // Toast
   showToast: (msg: string) => void;
   clearToast: () => void;
@@ -129,38 +140,34 @@ function createDefaultProject(): Project {
   };
 }
 
+function hydrateLoadedProject(parsed: Project): Project | null {
+  if (!parsed?.compositions?.length) return null;
+  parsed.assets = (parsed.assets || []).filter(a => a.url && !a.url.startsWith('blob:'));
+  for (const comp of parsed.compositions) {
+    if (!comp.backgroundColor) comp.backgroundColor = '#0a0a0f';
+    if (comp.workAreaStart == null) comp.workAreaStart = 0;
+    if (comp.workAreaEnd == null) comp.workAreaEnd = comp.duration;
+    for (const track of comp.tracks) {
+      for (const clip of track.clips) {
+        for (const key of TRANSFORM_PROP_KEYS) {
+          if (clip.transform[key]) clip.transform[key] = hydrateAnimatedProperty(clip.transform[key]);
+        }
+        if (!clip.transform.anchorX) clip.transform.anchorX = hydrateAnimatedProperty({ keyframes: [{ time: 0, value: 0, easing: 'linear' }] });
+        if (!clip.transform.anchorY) clip.transform.anchorY = hydrateAnimatedProperty({ keyframes: [{ time: 0, value: 0, easing: 'linear' }] });
+        if (clip.type === 'mesh3d') Object.assign(clip, ensureMeshAnimProps(clip));
+        if (clip.type === 'text') clip.textStyle = hydrateTextStyle(clip.textStyle);
+      }
+      if (track.solo == null) track.solo = false;
+    }
+  }
+  return parsed;
+}
+
 function loadAutosave(): Project | null {
   try {
     const raw = localStorage.getItem(AUTOSAVE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Project;
-    if (!parsed?.compositions?.length) return null;
-    // Drop blob: assets — they don't survive reload
-    parsed.assets = (parsed.assets || []).filter(a => a.url && !a.url.startsWith('blob:'));
-    for (const comp of parsed.compositions) {
-      if (!comp.backgroundColor) comp.backgroundColor = '#0a0a0f';
-      if (comp.workAreaStart == null) comp.workAreaStart = 0;
-      if (comp.workAreaEnd == null) comp.workAreaEnd = comp.duration;
-      for (const track of comp.tracks) {
-        for (const clip of track.clips) {
-          for (const key of TRANSFORM_PROP_KEYS) {
-            if (clip.transform[key]) clip.transform[key] = hydrateAnimatedProperty(clip.transform[key]);
-          }
-          if (!clip.transform.anchorX) clip.transform.anchorX = hydrateAnimatedProperty({ keyframes: [{ time: 0, value: 0, easing: 'linear' }] });
-          if (!clip.transform.anchorY) clip.transform.anchorY = hydrateAnimatedProperty({ keyframes: [{ time: 0, value: 0, easing: 'linear' }] });
-          if (clip.type === 'mesh3d') {
-            if (!clip.meshRotX) clip.meshRotX = hydrateAnimatedProperty({ keyframes: [{ time: 0, value: 18, easing: 'linear' }] });
-            else clip.meshRotX = hydrateAnimatedProperty(clip.meshRotX);
-            if (!clip.meshRotY) clip.meshRotY = hydrateAnimatedProperty({ keyframes: [{ time: 0, value: 0, easing: 'linear' }] });
-            else clip.meshRotY = hydrateAnimatedProperty(clip.meshRotY);
-            if (!clip.meshRotZ) clip.meshRotZ = hydrateAnimatedProperty({ keyframes: [{ time: 0, value: 0, easing: 'linear' }] });
-            else clip.meshRotZ = hydrateAnimatedProperty(clip.meshRotZ);
-          }
-        }
-        if (track.solo == null) track.solo = false;
-      }
-    }
-    return parsed;
+    return hydrateLoadedProject(JSON.parse(raw) as Project);
   } catch {
     return null;
   }
@@ -410,13 +417,21 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       };
     }
     if (patch) Object.assign(clip, patch);
+    if (clip.type === 'mesh3d') Object.assign(clip, ensureMeshAnimProps(clip));
     mutate('addClip', s => {
+      if (type === 'comp') {
+        const nestedId = patch?.compositionId || clip.compositionId;
+        if (!nestedId || wouldCreateCompCycle(s.project, getComp(s).id, nestedId)) return s;
+      }
       const next = updateComp(s, comp => {
         let tracks = comp.tracks;
         const explicit = trackId ? tracks.find(t => t.id === trackId && !t.locked) : undefined;
         let target = explicit;
         const assetName = assetId ? s.project.assets.find(a => a.id === assetId)?.name : undefined;
-        clip.name = nextClipName(comp, type, assetName);
+        const nestedName = type === 'comp' && (patch?.compositionId || clip.compositionId)
+          ? s.project.compositions.find(c => c.id === (patch?.compositionId || clip.compositionId))?.name
+          : undefined;
+        clip.name = nextClipName(comp, type, nestedName || assetName);
         if (!target) {
           const newTrack: Track = {
             id: `track-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
@@ -591,97 +606,76 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     mutate('transform', s => applyTransformValues(s, clipId, values, easing));
   }, [mutate]);
 
-  const toggleKeyframe = useCallback((clipId: string, key: keyof Transform, atCompTime?: number) => {
-    mutate('keyframe', s => {
-      const comp = getComp(s);
-      const clip = findClip(comp, clipId);
+  const setAnimValue = useCallback((clipId: string, key: AnimKey, value: number, easing: Easing = 'ease-in-out') => {
+    mutate('anim', s => {
+      const clip = findClip(getComp(s), clipId);
       if (!clip) return s;
-      const clipTime = Math.max(0, (atCompTime ?? s.currentTime) - clip.start);
-      const prop = clip.transform[key];
-      if (!prop) return s;
-      const nextProp = hasKeyframeAt(prop, clipTime)
-        ? removeKeyframe(prop, clipTime)
-        : setKeyframe(prop, clipTime, evalProp(prop, clipTime));
-      const newTransform: Transform = { ...clip.transform, [key]: nextProp };
-      return updateComp(s, c => ({
-        ...c,
-        tracks: c.tracks.map(t => ({
-          ...t,
-          clips: t.clips.map(cl => cl.id === clipId ? { ...cl, transform: newTransform } : cl),
-        })),
-      }));
+      const clipTime = Math.max(0, s.currentTime - clip.start);
+      const prop = ensureAnimProp(clip, key);
+      const next = (s.autoKey || isAnimated(prop))
+        ? setKeyframe(prop, clipTime, value, easing)
+        : { ...prop, keyframes: [{ ...prop.keyframes[0], value }] };
+      return mapClip(s, clipId, c => withAnimProp(c, key, next));
     });
   }, [mutate]);
 
-  const toggleKeyframes = useCallback((clipId: string, keys: (keyof Transform)[], atCompTime?: number) => {
+  const toggleKeyframe = useCallback((clipId: string, key: AnimKey, atCompTime?: number) => {
     mutate('keyframe', s => {
       const clip = findClip(getComp(s), clipId);
       if (!clip) return s;
       const clipTime = Math.max(0, (atCompTime ?? s.currentTime) - clip.start);
-      let newTransform: Transform = { ...clip.transform };
-      for (const key of keys) {
-        const prop = newTransform[key];
-        if (!prop) continue;
-        newTransform = {
-          ...newTransform,
-          [key]: hasKeyframeAt(prop, clipTime)
-            ? removeKeyframe(prop, clipTime)
-            : setKeyframe(prop, clipTime, evalProp(prop, clipTime)),
-        };
-      }
-      return updateComp(s, c => ({
-        ...c,
-        tracks: c.tracks.map(t => ({
-          ...t,
-          clips: t.clips.map(cl => cl.id === clipId ? { ...cl, transform: newTransform } : cl),
-        })),
-      }));
+      const prop = ensureAnimProp(clip, key);
+      const nextProp = hasKeyframeAt(prop, clipTime)
+        ? removeKeyframe(prop, clipTime)
+        : setKeyframe(prop, clipTime, animValueAt(prop, key, clipTime));
+      return mapClip(s, clipId, c => withAnimProp(c, key, nextProp));
     });
   }, [mutate]);
 
-  const toggleAnimated = useCallback((clipId: string, key: keyof Transform) => {
+  const toggleKeyframes = useCallback((clipId: string, keys: AnimKey[], atCompTime?: number) => {
+    mutate('keyframe', s => {
+      const clip = findClip(getComp(s), clipId);
+      if (!clip) return s;
+      const clipTime = Math.max(0, (atCompTime ?? s.currentTime) - clip.start);
+      let next = clip;
+      for (const key of keys) {
+        const prop = ensureAnimProp(next, key);
+        next = withAnimProp(next, key, hasKeyframeAt(prop, clipTime)
+          ? removeKeyframe(prop, clipTime)
+          : setKeyframe(prop, clipTime, animValueAt(prop, key, clipTime)));
+      }
+      return mapClip(s, clipId, () => next);
+    });
+  }, [mutate]);
+
+  const toggleAnimated = useCallback((clipId: string, key: AnimKey) => {
     mutate('animated', s => {
       const clip = findClip(getComp(s), clipId);
       if (!clip) return s;
       const clipTime = Math.max(0, s.currentTime - clip.start);
-      const prop = clip.transform[key];
-      if (!prop) return s;
+      const prop = ensureAnimProp(clip, key);
       let nextProp: AnimatedProperty;
       if (isAnimated(prop)) {
-        const value = evalProp(prop, clipTime);
+        const value = animValueAt(prop, key, clipTime);
         nextProp = { enabled: false, keyframes: [{ id: newKeyframeId(), time: 0, value, easing: 'linear' }] };
       } else {
-        nextProp = setKeyframe(prop, clipTime, evalProp(prop, clipTime));
+        nextProp = setKeyframe(prop, clipTime, animValueAt(prop, key, clipTime));
         if (nextProp.keyframes.length === 1 && clipTime > 0.001) {
           nextProp = setKeyframe(nextProp, 0, prop.keyframes[0].value);
         }
       }
-      const newTransform: Transform = { ...clip.transform, [key]: nextProp };
-      return updateComp(s, c => ({
-        ...c,
-        tracks: c.tracks.map(t => ({
-          ...t,
-          clips: t.clips.map(cl => cl.id === clipId ? { ...cl, transform: newTransform } : cl),
-        })),
-      }));
+      return mapClip(s, clipId, c => withAnimProp(c, key, nextProp));
     });
   }, [mutate]);
 
-  const removeKeyframeAt = useCallback((clipId: string, key: keyof Transform, time: number) => {
+  const removeKeyframeAt = useCallback((clipId: string, key: AnimKey, time: number) => {
     mutate('keyframe', s => {
       const clip = findClip(getComp(s), clipId);
       if (!clip) return s;
-      const prop = clip.transform[key];
+      const prop = getAnimProp(clip, key);
       if (!prop) return s;
-      const newTransform: Transform = { ...clip.transform, [key]: removeKeyframe(prop, time) };
       return {
-        ...updateComp(s, c => ({
-          ...c,
-          tracks: c.tracks.map(t => ({
-            ...t,
-            clips: t.clips.map(cl => cl.id === clipId ? { ...cl, transform: newTransform } : cl),
-          })),
-        })),
+        ...mapClip(s, clipId, c => withAnimProp(c, key, removeKeyframe(prop, time))),
         selectedKeyframe: s.selectedKeyframe?.clipId === clipId && s.selectedKeyframe.key === key
           ? null : s.selectedKeyframe,
       };
@@ -693,8 +687,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       const clip = s.selectedClipId ? findClip(getComp(s), s.selectedClipId) : null;
       if (!clip) return s;
       const times: number[] = [];
-      for (const key of TRANSFORM_PROP_KEYS) {
-        const prop = clip.transform[key];
+      for (const key of clipAnimKeys(clip)) {
+        const prop = getAnimProp(clip, key);
         if (!prop) continue;
         for (const kf of prop.keyframes) times.push(clip.start + kf.time);
       }
@@ -740,20 +734,13 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     });
   }, [mutate]);
 
-  const moveKeyframe = useCallback((clipId: string, key: keyof Transform, fromTime: number, toTime: number) => {
+  const moveKeyframe = useCallback((clipId: string, key: AnimKey, fromTime: number, toTime: number) => {
     mutate('moveKf', s => {
       const clip = findClip(getComp(s), clipId);
       if (!clip) return s;
-      const prop = clip.transform[key];
+      const prop = getAnimProp(clip, key);
       if (!prop) return s;
-      const newTransform: Transform = { ...clip.transform, [key]: moveKeyframeOnProp(prop, fromTime, toTime) };
-      return updateComp(s, c => ({
-        ...c,
-        tracks: c.tracks.map(t => ({
-          ...t,
-          clips: t.clips.map(cl => cl.id === clipId ? { ...cl, transform: newTransform } : cl),
-        })),
-      }));
+      return mapClip(s, clipId, c => withAnimProp(c, key, moveKeyframeOnProp(prop, fromTime, toTime)));
     });
   }, [mutate]);
 
@@ -772,11 +759,24 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     });
   }, [mutate]);
 
-  const patchKeyframe = useCallback((clipId: string, key: keyof Transform, time: number, patch: Partial<Keyframe>) => {
+  const patchAnim = useCallback((clipId: string, patch: Partial<Record<AnimKey, AnimatedProperty>>) => {
+    mutate('moveKf', s => {
+      const clip = findClip(getComp(s), clipId);
+      if (!clip) return s;
+      let next = clip;
+      for (const [key, prop] of Object.entries(patch) as [AnimKey, AnimatedProperty | undefined][]) {
+        if (!prop) continue;
+        next = withAnimProp(next, key, prop);
+      }
+      return mapClip(s, clipId, () => next);
+    });
+  }, [mutate]);
+
+  const patchKeyframe = useCallback((clipId: string, key: AnimKey, time: number, patch: Partial<Keyframe>) => {
     mutate('patchKf', s => {
       const clip = findClip(getComp(s), clipId);
       if (!clip) return s;
-      const prop = clip.transform[key];
+      const prop = getAnimProp(clip, key);
       if (!prop) return s;
       const keyframes = prop.keyframes.map(k => {
         if (Math.abs(k.time - time) >= 1 / 120) return k;
@@ -784,16 +784,9 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         if (patch.easing && patch.bx1 == null) return applyBezierToKeyframe(next, patch.easing);
         return next;
       }).sort((a, b) => a.time - b.time);
-      const newTransform: Transform = { ...clip.transform, [key]: { keyframes, enabled: prop.enabled } };
       const newTime = patch.time ?? time;
       return {
-        ...updateComp(s, c => ({
-          ...c,
-          tracks: c.tracks.map(t => ({
-            ...t,
-            clips: t.clips.map(cl => cl.id === clipId ? { ...cl, transform: newTransform } : cl),
-          })),
-        })),
+        ...mapClip(s, clipId, c => withAnimProp(c, key, { keyframes, enabled: prop.enabled })),
         selectedKeyframe: s.selectedKeyframe?.clipId === clipId && s.selectedKeyframe.key === key
           ? { clipId, key, time: newTime }
           : s.selectedKeyframe,
@@ -810,25 +803,17 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     })));
   }, [mutate]);
 
-  const setKeyframeEasing = useCallback((clipId: string, key: keyof Transform, easing: Easing) => {
+  const setKeyframeEasing = useCallback((clipId: string, key: AnimKey, easing: Easing) => {
     mutate('easing', s => {
-      const comp = getComp(s);
-      const clip = findClip(comp, clipId);
+      const clip = findClip(getComp(s), clipId);
       if (!clip) return s;
       const clipTime = Math.max(0, s.currentTime - clip.start);
-      const prop = clip.transform[key];
+      const prop = getAnimProp(clip, key);
       if (!prop) return s;
       const keyframes = prop.keyframes.map(k =>
         Math.abs(k.time - clipTime) < 1 / 120 ? applyBezierToKeyframe(k, easing) : k
       );
-      const newTransform: Transform = { ...clip.transform, [key]: { keyframes, enabled: prop.enabled } };
-      return updateComp(s, c => ({
-        ...c,
-        tracks: c.tracks.map(t => ({
-          ...t,
-          clips: t.clips.map(cl => cl.id === clipId ? { ...cl, transform: newTransform } : cl),
-        })),
-      }));
+      return mapClip(s, clipId, c => withAnimProp(c, key, { keyframes, enabled: prop.enabled }));
     });
   }, [mutate]);
 
@@ -958,6 +943,22 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     });
   }, [mutate]);
 
+  const alignClipToComp = useCallback((clipId: string, align: CompAlign) => {
+    mutate('align', s => {
+      const clip = findClip(getComp(s), clipId);
+      if (!clip) return s;
+      const pos = alignedLocalPosition(
+        clip,
+        s.currentTime,
+        getComp(s),
+        align,
+        id => s.project.assets.find(a => a.id === id),
+        s.project,
+      );
+      return applyTransformValues(s, clipId, { x: pos.x, y: pos.y }, 'ease-in-out');
+    });
+  }, [mutate]);
+
   const toggleTrackVisibility = useCallback((trackId: string) => {
     mutate('trackVis', s => updateComp(s, comp => ({
       ...comp,
@@ -1076,6 +1077,199 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     mutate('comp', s => updateComp(s, comp => ({ ...comp, ...patch })));
   }, [mutate]);
 
+  const renameComposition = useCallback((id: string, name: string) => {
+    mutate('renameComp', s => {
+      const prev = s.project.compositions.find(c => c.id === id);
+      if (!prev || prev.name === name) return s;
+      const oldName = prev.name;
+      return {
+        ...s,
+        project: {
+          ...s.project,
+          compositions: s.project.compositions.map(c => {
+            const renamed = c.id === id ? { ...c, name } : c;
+            return {
+              ...renamed,
+              tracks: renamed.tracks.map(t => ({
+                ...t,
+                clips: t.clips.map(clip =>
+                  clip.type === 'comp' && clip.compositionId === id && clip.name === oldName
+                    ? { ...clip, name }
+                    : clip
+                ),
+              })),
+            };
+          }),
+        },
+      };
+    });
+  }, [mutate]);
+
+  const setActiveComposition = useCallback((id: string) => {
+    setState(s => {
+      if (!s.project.compositions.some(c => c.id === id)) return s;
+      if (s.project.activeCompositionId === id) {
+        if (s.selectedClipId || s.selectedTrackId || s.selectedKeyframe) {
+          return {
+            ...s,
+            selectedClipId: null,
+            selectedTrackId: null,
+            expandedClipId: null,
+            selectedKeyframe: null,
+          };
+        }
+        return s;
+      }
+      const next = s.project.compositions.find(c => c.id === id);
+      return {
+        ...s,
+        project: { ...s.project, activeCompositionId: id },
+        currentTime: Math.min(s.currentTime, next?.duration ?? s.currentTime),
+        isPlaying: false,
+        selectedClipId: null,
+        selectedTrackId: null,
+        expandedClipId: null,
+        selectedKeyframe: null,
+      };
+    });
+  }, []);
+
+  const addComposition = useCallback((name?: string): string => {
+    let id = '';
+    mutate('addComp', s => {
+      const active = getComp(s);
+      const n = s.project.compositions.length + 1;
+      const created = createEmptyComposition({
+        name: name || `Composition ${n}`,
+        width: active.width,
+        height: active.height,
+        fps: active.fps,
+      });
+      id = created.id;
+      return {
+        ...s,
+        project: {
+          ...s.project,
+          compositions: [...s.project.compositions, created],
+          activeCompositionId: created.id,
+        },
+        currentTime: 0,
+        isPlaying: false,
+        selectedClipId: null,
+        selectedTrackId: null,
+        expandedClipId: null,
+        selectedKeyframe: null,
+      };
+    });
+    return id;
+  }, [mutate]);
+
+  const duplicateComposition = useCallback((id: string): string | null => {
+    let newId: string | null = null;
+    mutate('dupComp', s => {
+      const src = s.project.compositions.find(c => c.id === id);
+      if (!src) return s;
+      const clone = JSON.parse(JSON.stringify(src)) as Composition;
+      clone.id = `comp-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+      clone.name = `${src.name} copy`;
+      const clipIdMap = new Map<string, string>();
+      clone.tracks = clone.tracks.map((t, i) => {
+        const tid = `track-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 5)}`;
+        return {
+          ...t,
+          id: tid,
+          clips: t.clips.map(cl => {
+            const nid = `clip-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            clipIdMap.set(cl.id, nid);
+            return { ...cl, id: nid, trackId: tid };
+          }),
+        };
+      });
+      for (const t of clone.tracks) {
+        for (const cl of t.clips) {
+          if (cl.parentId) {
+            const mapped = clipIdMap.get(cl.parentId);
+            if (mapped) cl.parentId = mapped;
+          }
+          if (cl.motionPathClipId) {
+            const mapped = clipIdMap.get(cl.motionPathClipId);
+            if (mapped) cl.motionPathClipId = mapped;
+          }
+        }
+      }
+      newId = clone.id;
+      return {
+        ...s,
+        project: {
+          ...s.project,
+          compositions: [...s.project.compositions, clone],
+          activeCompositionId: clone.id,
+        },
+        currentTime: 0,
+        selectedClipId: null,
+        selectedTrackId: null,
+        expandedClipId: null,
+      };
+    });
+    return newId;
+  }, [mutate]);
+
+  const deleteComposition = useCallback((id: string): boolean => {
+    let ok = false;
+    mutate('delComp', s => {
+      if (s.project.compositions.length <= 1) return s;
+      if (compositionIsReferenced(s.project, id)) return s;
+      const remaining = s.project.compositions.filter(c => c.id !== id);
+      if (remaining.length === s.project.compositions.length) return s;
+      ok = true;
+      const nextActive = s.project.activeCompositionId === id
+        ? remaining[0].id
+        : s.project.activeCompositionId;
+      return {
+        ...s,
+        project: { ...s.project, compositions: remaining, activeCompositionId: nextActive },
+        currentTime: s.project.activeCompositionId === id ? 0 : s.currentTime,
+        selectedClipId: s.project.activeCompositionId === id ? null : s.selectedClipId,
+        selectedTrackId: s.project.activeCompositionId === id ? null : s.selectedTrackId,
+        expandedClipId: s.project.activeCompositionId === id ? null : s.expandedClipId,
+      };
+    });
+    return ok;
+  }, [mutate]);
+
+  const addCompositionAsLayer = useCallback((compositionId: string): string | null => {
+    let clipId: string | null = null;
+    mutate('nestComp', s => {
+      const host = getComp(s);
+      if (wouldCreateCompCycle(s.project, host.id, compositionId)) return s;
+      const nested = s.project.compositions.find(c => c.id === compositionId);
+      if (!nested) return s;
+      const duration = Math.max(0.1, nested.duration);
+      const clip = createNewClip('track-pending', 'comp', s.currentTime, duration);
+      clip.compositionId = compositionId;
+      clip.name = nextClipName(host, 'comp', nested.name);
+      const newTrack: Track = {
+        id: `track-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        name: clip.name,
+        type: 'comp',
+        visible: true,
+        locked: false,
+        muted: false,
+        solo: false,
+        clips: [],
+        volume: 1,
+      };
+      clip.trackId = newTrack.id;
+      clipId = clip.id;
+      const next = updateComp(s, comp => extendCompForClip({
+        ...comp,
+        tracks: [...comp.tracks, { ...newTrack, clips: [clip] }],
+      }, clip.start, clip.duration));
+      return { ...next, selectedClipId: clip.id };
+    });
+    return clipId;
+  }, [mutate]);
+
   const newProject = useCallback(() => {
     historyRef.current = [];
     futureRef.current = [];
@@ -1117,8 +1311,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 
   const loadProjectFile = useCallback(async (file: File) => {
     const text = await file.text();
-    const parsed = JSON.parse(text) as Project;
-    if (!parsed?.compositions?.length) throw new Error('Invalid project file');
+    const parsed = hydrateLoadedProject(JSON.parse(text) as Project);
+    if (!parsed) throw new Error('Invalid project file');
     historyRef.current = [];
     futureRef.current = [];
     setState(s => ({
@@ -1179,12 +1373,13 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     selectClip, selectTrack, selectKeyframe,
     setToolMode, setAutoKey,
     addClip, deleteClip, moveClip, resizeClip, updateClipTransform, updateClipProperty,
-    setTransformValue, setTransformValues, toggleKeyframe, toggleKeyframes, toggleAnimated, moveKeyframe,
-    patchTransform, removeKeyframeAt, setKeyframeEasing, patchKeyframe, setTrackVolume, jumpKeyframe,
-    duplicateClip, splitClip, trimClipEdge, copyClip, pasteClip, nudgeClip, toggleExpanded,
+    setTransformValue, setTransformValues, setAnimValue, toggleKeyframe, toggleKeyframes, toggleAnimated, moveKeyframe,
+    patchTransform, patchAnim, removeKeyframeAt, setKeyframeEasing, patchKeyframe, setTrackVolume, jumpKeyframe,
+    duplicateClip, splitClip, trimClipEdge, copyClip, pasteClip, nudgeClip, alignClipToComp, toggleExpanded,
     toggleTrackVisibility, toggleTrackLock, toggleTrackMute, toggleTrackSolo, addTrack, deleteTrack, reorderTracks,
     addAsset, updateAsset, deleteAsset,
-    setProjectName, setCompositionDuration, updateComposition,
+    setProjectName, setCompositionDuration, updateComposition, renameComposition,
+    setActiveComposition, addComposition, duplicateComposition, deleteComposition, addCompositionAsLayer,
     newProject, saveProjectFile, loadProjectFile,
     undo, redo,
     getActiveComposition,
@@ -1219,6 +1414,21 @@ function updateComp(state: EditorState, updater: (c: Composition) => Composition
       ),
     },
   };
+}
+
+function mapClip(state: EditorState, clipId: string, updater: (c: Clip) => Clip): EditorState {
+  return updateComp(state, c => ({
+    ...c,
+    tracks: c.tracks.map(t => ({
+      ...t,
+      clips: t.clips.map(cl => cl.id === clipId ? updater(cl) : cl),
+    })),
+  }));
+}
+
+function animValueAt(prop: AnimatedProperty, key: AnimKey, time: number): number {
+  if (isMeshColorKey(key)) return parseHexColor(evalColorProp(prop, time));
+  return evalProp(prop, time);
 }
 
 function extendCompForClip(comp: Composition, start: number, duration: number): Composition {

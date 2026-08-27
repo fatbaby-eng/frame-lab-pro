@@ -6,7 +6,7 @@ export type MeshShape = 'cube' | 'sphere' | 'torus' | 'plane' | 'dodecahedron' |
 
 export const MESH_PRIMITIVES: MeshShape[] = ['cube', 'sphere', 'torus', 'plane', 'dodecahedron', 'icosahedron', 'cone'];
 
-export type LayerType = 'video' | 'audio' | 'image' | 'text' | 'shape' | 'mesh3d' | 'effect' | 'path';
+export type LayerType = 'video' | 'audio' | 'image' | 'text' | 'shape' | 'mesh3d' | 'effect' | 'path' | 'comp';
 
 export type Easing = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold' | 'bezier';
 
@@ -200,6 +200,57 @@ export function evalProp(prop: AnimatedProperty, time: number): number {
   return before.value + (after.value - before.value) * eased;
 }
 
+export function parseHexColor(hex: string): number {
+  const n = (hex || '#000000').replace('#', '');
+  const full = n.length === 3 ? n.split('').map(c => c + c).join('') : n;
+  return parseInt(full.slice(0, 6), 16) || 0;
+}
+
+export function packedToHex(n: number): string {
+  return `#${(n >>> 0).toString(16).padStart(6, '0').slice(-6)}`;
+}
+
+function packedToRgb(n: number): [number, number, number] {
+  const v = n >>> 0;
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+function rgbToPacked(r: number, g: number, b: number): number {
+  return ((Math.round(r) & 255) << 16) | ((Math.round(g) & 255) << 8) | (Math.round(b) & 255);
+}
+
+function easeBetween(before: Keyframe, after: Keyframe, time: number): number {
+  if (time <= before.time) return 0;
+  if (time >= after.time || after.time <= before.time) return 1;
+  const t = (time - before.time) / (after.time - before.time);
+  if (before.easing === 'hold') return 0;
+  const [x1, y1, x2, y2] = keyframeBezier(before);
+  return cubicBezierY(t, x1, y1, x2, y2);
+}
+
+/** Interpolate packed RGB keyframes per-channel so color ramps stay in gamut. */
+export function evalColorProp(prop: AnimatedProperty, time: number): string {
+  const kf = prop.keyframes;
+  if (kf.length === 0) return '#000000';
+  if (kf.length === 1) return packedToHex(kf[0].value);
+
+  let before = kf[0];
+  let after = kf[kf.length - 1];
+  for (let i = 0; i < kf.length - 1; i++) {
+    if (time >= kf[i].time && time <= kf[i + 1].time) {
+      before = kf[i];
+      after = kf[i + 1];
+      break;
+    }
+  }
+  if (time <= before.time) return packedToHex(before.value);
+  if (time >= after.time) return packedToHex(after.value);
+  const e = easeBetween(before, after, time);
+  const [r0, g0, b0] = packedToRgb(before.value);
+  const [r1, g1, b1] = packedToRgb(after.value);
+  return packedToHex(rgbToPacked(r0 + (r1 - r0) * e, g0 + (g1 - g0) * e, b0 + (b1 - b0) * e));
+}
+
 export function easingToBezier(easing: Easing): [number, number, number, number] {
   switch (easing) {
     case 'linear': return [0, 0, 1, 1];
@@ -337,27 +388,27 @@ export interface Clip {
   effectParams?: Record<string, number>;
   // 3D mesh
   meshShape?: MeshShape;
-  meshColor?: string;
+  meshColor?: AnimatedProperty;
   meshWireframe?: boolean;
   meshRotX?: AnimatedProperty;
   meshRotY?: AnimatedProperty;
   meshRotZ?: AnimatedProperty;
-  meshSegments?: number;
-  meshMetalness?: number;
-  meshRoughness?: number;
+  meshSegments?: AnimatedProperty;
+  meshMetalness?: AnimatedProperty;
+  meshRoughness?: AnimatedProperty;
   meshMapAssetId?: string;
-  meshMapRepeatU?: number;
-  meshMapRepeatV?: number;
-  meshMapOffsetU?: number;
-  meshMapOffsetV?: number;
-  meshMapRotation?: number;
-  meshLightAmbient?: number;
-  meshLightAmbientColor?: string;
-  meshLightKey?: number;
-  meshLightKeyColor?: string;
-  meshLightAzimuth?: number;
-  meshLightElevation?: number;
-  meshLightFill?: number;
+  meshMapRepeatU?: AnimatedProperty;
+  meshMapRepeatV?: AnimatedProperty;
+  meshMapOffsetU?: AnimatedProperty;
+  meshMapOffsetV?: AnimatedProperty;
+  meshMapRotation?: AnimatedProperty;
+  meshLightAmbient?: AnimatedProperty;
+  meshLightAmbientColor?: AnimatedProperty;
+  meshLightKey?: AnimatedProperty;
+  meshLightKeyColor?: AnimatedProperty;
+  meshLightAzimuth?: AnimatedProperty;
+  meshLightElevation?: AnimatedProperty;
+  meshLightFill?: AnimatedProperty;
   // Path
   pathData?: PathData;
   pathStrokeWidth?: number;
@@ -369,16 +420,42 @@ export interface Clip {
   parentId?: string;
   // Raster effects applied at render time
   effects?: LayerEffect[];
+  /** Nested composition id when type === 'comp'. */
+  compositionId?: string;
 }
+
+export type TextAlign = 'left' | 'center' | 'right' | 'justify';
+export type TextVAlign = 'top' | 'middle' | 'bottom';
+export type CompAlign = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom';
 
 export interface TextStyle {
   fontFamily: string;
   fontSize: number;
   color: string;
-  align: 'left' | 'center' | 'right';
+  align: TextAlign;
+  valign: TextVAlign;
   bold: boolean;
   italic: boolean;
+  underline: boolean;
+  allCaps: boolean;
+  letterSpacing: number;
+  lineHeight: number;
+  paragraphGap: number;
+  /** Wrap width in px. 0 = no wrapping (newlines still break). */
+  boxWidth: number;
 }
+
+export const TEXT_FONTS: { label: string; value: string }[] = [
+  { label: 'Inter', value: 'Inter, sans-serif' },
+  { label: 'Arial', value: 'Arial, Helvetica, sans-serif' },
+  { label: 'Helvetica', value: 'Helvetica, Arial, sans-serif' },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Times', value: '"Times New Roman", Times, serif' },
+  { label: 'Courier', value: '"Courier New", Courier, monospace' },
+  { label: 'Verdana', value: 'Verdana, Geneva, sans-serif' },
+  { label: 'Impact', value: 'Impact, Haettenschweiler, sans-serif' },
+  { label: 'Trebuchet', value: '"Trebuchet MS", sans-serif' },
+];
 
 export function defaultTextStyle(): TextStyle {
   return {
@@ -386,9 +463,20 @@ export function defaultTextStyle(): TextStyle {
     fontSize: 48,
     color: '#ffffff',
     align: 'center',
+    valign: 'middle',
     bold: false,
     italic: false,
+    underline: false,
+    allCaps: false,
+    letterSpacing: 0,
+    lineHeight: 1.2,
+    paragraphGap: 0,
+    boxWidth: 0,
   };
+}
+
+export function hydrateTextStyle(style?: Partial<TextStyle> | null): TextStyle {
+  return { ...defaultTextStyle(), ...style };
 }
 
 export interface Track {
@@ -406,6 +494,123 @@ export interface Track {
 export const TRANSFORM_PROP_KEYS: (keyof Transform)[] = [
   'x', 'y', 'scaleX', 'scaleY', 'rotation', 'opacity', 'anchorX', 'anchorY',
 ];
+
+export type MeshAnimKey =
+  | 'meshRotX' | 'meshRotY' | 'meshRotZ'
+  | 'meshSegments' | 'meshMetalness' | 'meshRoughness' | 'meshColor'
+  | 'meshMapRepeatU' | 'meshMapRepeatV' | 'meshMapOffsetU' | 'meshMapOffsetV' | 'meshMapRotation'
+  | 'meshLightAmbient' | 'meshLightKey' | 'meshLightFill'
+  | 'meshLightAzimuth' | 'meshLightElevation'
+  | 'meshLightAmbientColor' | 'meshLightKeyColor';
+
+export type AnimKey = keyof Transform | MeshAnimKey;
+
+export interface MeshPropDef {
+  key: MeshAnimKey;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  defaultValue: number;
+  group: 'object' | 'texture' | 'light';
+  color?: boolean;
+}
+
+export const MESH_PROP_DEFS: MeshPropDef[] = [
+  { key: 'meshRotX', label: 'Rotate X', min: -360, max: 360, step: 1, defaultValue: 18, group: 'object' },
+  { key: 'meshRotY', label: 'Rotate Y', min: -360, max: 360, step: 1, defaultValue: 0, group: 'object' },
+  { key: 'meshRotZ', label: 'Rotate Z', min: -360, max: 360, step: 1, defaultValue: 0, group: 'object' },
+  { key: 'meshSegments', label: 'Segments', min: 3, max: 64, step: 1, defaultValue: 32, group: 'object' },
+  { key: 'meshMetalness', label: 'Metalness', min: 0, max: 1, step: 0.01, defaultValue: 0.38, group: 'object' },
+  { key: 'meshRoughness', label: 'Roughness', min: 0, max: 1, step: 0.01, defaultValue: 0.32, group: 'object' },
+  { key: 'meshColor', label: 'Color', min: 0, max: 0xffffff, step: 1, defaultValue: 0x6366f1, group: 'object', color: true },
+  { key: 'meshMapRepeatU', label: 'Repeat U', min: 0.1, max: 8, step: 0.1, defaultValue: 1, group: 'texture' },
+  { key: 'meshMapRepeatV', label: 'Repeat V', min: 0.1, max: 8, step: 0.1, defaultValue: 1, group: 'texture' },
+  { key: 'meshMapOffsetU', label: 'Offset U', min: -1, max: 1, step: 0.01, defaultValue: 0, group: 'texture' },
+  { key: 'meshMapOffsetV', label: 'Offset V', min: -1, max: 1, step: 0.01, defaultValue: 0, group: 'texture' },
+  { key: 'meshMapRotation', label: 'Map rot', min: -180, max: 180, step: 1, defaultValue: 0, group: 'texture' },
+  { key: 'meshLightAmbient', label: 'Ambient', min: 0, max: 2, step: 0.05, defaultValue: 0.85, group: 'light' },
+  { key: 'meshLightKey', label: 'Key', min: 0, max: 3, step: 0.05, defaultValue: 1.15, group: 'light' },
+  { key: 'meshLightFill', label: 'Fill', min: 0, max: 2, step: 0.05, defaultValue: 0.45, group: 'light' },
+  { key: 'meshLightAzimuth', label: 'Azimuth', min: 0, max: 360, step: 1, defaultValue: 35, group: 'light' },
+  { key: 'meshLightElevation', label: 'Elevation', min: -90, max: 90, step: 1, defaultValue: 40, group: 'light' },
+  { key: 'meshLightAmbientColor', label: 'Amb color', min: 0, max: 0xffffff, step: 1, defaultValue: 0xffffff, group: 'light', color: true },
+  { key: 'meshLightKeyColor', label: 'Key color', min: 0, max: 0xffffff, step: 1, defaultValue: 0xffffff, group: 'light', color: true },
+];
+
+export const MESH_PROP_KEYS: MeshAnimKey[] = MESH_PROP_DEFS.map(d => d.key);
+export const MESH_PROP_BY_KEY: Record<MeshAnimKey, MeshPropDef> = Object.fromEntries(
+  MESH_PROP_DEFS.map(d => [d.key, d])
+) as Record<MeshAnimKey, MeshPropDef>;
+
+export function isTransformKey(key: string): key is keyof Transform {
+  return (TRANSFORM_PROP_KEYS as string[]).includes(key);
+}
+
+export function isMeshAnimKey(key: string): key is MeshAnimKey {
+  return (MESH_PROP_KEYS as string[]).includes(key);
+}
+
+export function isMeshColorKey(key: AnimKey): boolean {
+  return isMeshAnimKey(key) && !!MESH_PROP_BY_KEY[key].color;
+}
+
+export function getAnimProp(clip: Clip, key: AnimKey): AnimatedProperty | undefined {
+  if (isTransformKey(key)) return clip.transform[key];
+  const value = clip[key];
+  return value && typeof value === 'object' && 'keyframes' in value ? value : undefined;
+}
+
+export function withAnimProp(clip: Clip, key: AnimKey, prop: AnimatedProperty): Clip {
+  if (isTransformKey(key)) {
+    return { ...clip, transform: { ...clip.transform, [key]: prop } };
+  }
+  return { ...clip, [key]: prop };
+}
+
+export function coerceAnimated(raw: unknown, fallback: number, asColor = false): AnimatedProperty {
+  if (raw && typeof raw === 'object' && Array.isArray((raw as AnimatedProperty).keyframes)) {
+    return hydrateAnimatedProperty(raw as AnimatedProperty);
+  }
+  if (typeof raw === 'number' && Number.isFinite(raw)) return makeAnimatedProperty(raw);
+  if (asColor && typeof raw === 'string') return makeAnimatedProperty(parseHexColor(raw));
+  return makeAnimatedProperty(fallback);
+}
+
+export function ensureMeshAnimProps(clip: Clip): Clip {
+  if (clip.type !== 'mesh3d') return clip;
+  let next = clip;
+  for (const def of MESH_PROP_DEFS) {
+    next = { ...next, [def.key]: coerceAnimated(clip[def.key], def.defaultValue, !!def.color) };
+  }
+  return next;
+}
+
+export function ensureAnimProp(clip: Clip, key: AnimKey): AnimatedProperty {
+  const existing = getAnimProp(clip, key);
+  if (existing?.keyframes.length) return existing;
+  if (isMeshAnimKey(key)) return makeAnimatedProperty(MESH_PROP_BY_KEY[key].defaultValue);
+  return makeAnimatedProperty(0);
+}
+
+export function evalMeshNumber(clip: Clip, key: MeshAnimKey, time: number): number {
+  const def = MESH_PROP_BY_KEY[key];
+  const value = evalProp(ensureAnimProp(clip, key), time);
+  if (key === 'meshSegments') return Math.max(def.min, Math.min(def.max, Math.round(value)));
+  return value;
+}
+
+export function evalMeshColor(clip: Clip, key: MeshAnimKey, time: number, fallback: string): string {
+  const prop = getAnimProp(clip, key);
+  if (!prop) return fallback;
+  return evalColorProp(prop, time);
+}
+
+export function clipAnimKeys(clip: Clip): AnimKey[] {
+  const keys: AnimKey[] = [...TRANSFORM_PROP_KEYS];
+  if (clip.type === 'mesh3d') keys.push(...MESH_PROP_KEYS);
+  return keys;
+}
 
 export function isAnimated(prop: AnimatedProperty | undefined): boolean {
   return !!prop && (prop.keyframes.length > 1 || !!prop.enabled);
@@ -516,7 +721,7 @@ export function createDefaultComposition(): Composition {
   const meshClip = createNewClip(tracks[4].id, 'mesh3d', 0, 10);
   meshClip.name = 'Orb';
   meshClip.meshShape = 'torus';
-  meshClip.meshColor = '#818cf8';
+  meshClip.meshColor = makeAnimatedProperty(parseHexColor('#818cf8'));
   meshClip.transform.y = makeAnimatedProperty(-40);
   meshClip.transform.scaleX = makeAnimatedProperty(2.2);
   meshClip.transform.scaleY = makeAnimatedProperty(2.2);
@@ -545,7 +750,7 @@ export function createDefaultComposition(): Composition {
 
 function createTrack(type: LayerType, name: string, index: number): Track {
   return {
-    id: `track-${Date.now()}-${index}`,
+    id: `track-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 5)}`,
     name,
     type,
     visible: true,
@@ -566,7 +771,70 @@ const LAYER_LABELS: Record<LayerType, string> = {
   mesh3d: '3D',
   effect: 'Effect',
   path: 'Path',
+  comp: 'Comp',
 };
+
+export function nestedCompTime(clip: Clip, parentTime: number): number {
+  return clip.sourceStart + Math.max(0, parentTime - clip.start);
+}
+
+/** True if placing `nestedCompId` inside `hostCompId` would loop. */
+export function wouldCreateCompCycle(project: Project, hostCompId: string, nestedCompId: string): boolean {
+  if (!nestedCompId || hostCompId === nestedCompId) return true;
+  const stack = new Set<string>();
+  const walk = (id: string): boolean => {
+    if (id === hostCompId) return true;
+    if (stack.has(id)) return false;
+    stack.add(id);
+    const nested = project.compositions.find(c => c.id === id);
+    if (!nested) return false;
+    for (const track of nested.tracks) {
+      for (const clip of track.clips) {
+        if (clip.type === 'comp' && clip.compositionId && walk(clip.compositionId)) return true;
+      }
+    }
+    stack.delete(id);
+    return false;
+  };
+  return walk(nestedCompId);
+}
+
+export function compositionIsReferenced(project: Project, compositionId: string): boolean {
+  return project.compositions.some(c =>
+    c.tracks.some(t => t.clips.some(cl => cl.type === 'comp' && cl.compositionId === compositionId))
+  );
+}
+
+export function createEmptyComposition(opts?: {
+  name?: string;
+  width?: number;
+  height?: number;
+  fps?: number;
+  duration?: number;
+}): Composition {
+  const tracks = [
+    createTrack('video', 'Video 1', 0),
+    createTrack('video', 'Video 2', 1),
+    createTrack('text', 'Text', 2),
+    createTrack('shape', 'Shapes', 3),
+    createTrack('mesh3d', '3D', 4),
+    createTrack('audio', 'Audio 1', 5),
+    createTrack('path', 'Paths', 6),
+  ];
+  const duration = opts?.duration ?? 10;
+  return {
+    id: `comp-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+    name: opts?.name ?? 'Composition',
+    width: opts?.width ?? 1920,
+    height: opts?.height ?? 1080,
+    fps: opts?.fps ?? 30,
+    duration,
+    backgroundColor: '#0a0a0f',
+    workAreaStart: 0,
+    workAreaEnd: duration,
+    tracks,
+  };
+}
 
 export function nextClipName(comp: Composition, type: LayerType, assetName?: string): string {
   if (assetName) return assetName.replace(/\.[^.]+$/, '');
@@ -594,26 +862,31 @@ export function createNewClip(
     sourceStart: 0,
     transform: makeTransform(),
     textContent: type === 'text' ? 'Frame Lab' : undefined,
-    textStyle: type === 'text' ? defaultTextStyle() : undefined,
+    textStyle: type === 'text' ? { ...defaultTextStyle(), boxWidth: 800 } : undefined,
     shapeType: type === 'shape' ? 'rect' : undefined,
     shapeColor: type === 'shape' ? '#6366f1' : undefined,
     shapeStroke: type === 'shape' ? 0 : undefined,
     meshShape: type === 'mesh3d' ? 'torus' : undefined,
-    meshColor: type === 'mesh3d' ? '#6366f1' : undefined,
     meshWireframe: type === 'mesh3d' ? false : undefined,
     meshRotX: type === 'mesh3d' ? makeAnimatedProperty(18) : undefined,
     meshRotY: type === 'mesh3d' ? makeAnimatedProperty(0) : undefined,
     meshRotZ: type === 'mesh3d' ? makeAnimatedProperty(0) : undefined,
-    meshSegments: type === 'mesh3d' ? 32 : undefined,
-    meshMetalness: type === 'mesh3d' ? 0.38 : undefined,
-    meshRoughness: type === 'mesh3d' ? 0.32 : undefined,
-    meshMapRepeatU: type === 'mesh3d' ? 1 : undefined,
-    meshMapRepeatV: type === 'mesh3d' ? 1 : undefined,
-    meshLightAmbient: type === 'mesh3d' ? 0.85 : undefined,
-    meshLightKey: type === 'mesh3d' ? 1.15 : undefined,
-    meshLightAzimuth: type === 'mesh3d' ? 35 : undefined,
-    meshLightElevation: type === 'mesh3d' ? 40 : undefined,
-    meshLightFill: type === 'mesh3d' ? 0.45 : undefined,
+    meshSegments: type === 'mesh3d' ? makeAnimatedProperty(32) : undefined,
+    meshMetalness: type === 'mesh3d' ? makeAnimatedProperty(0.38) : undefined,
+    meshRoughness: type === 'mesh3d' ? makeAnimatedProperty(0.32) : undefined,
+    meshColor: type === 'mesh3d' ? makeAnimatedProperty(parseHexColor('#6366f1')) : undefined,
+    meshMapRepeatU: type === 'mesh3d' ? makeAnimatedProperty(1) : undefined,
+    meshMapRepeatV: type === 'mesh3d' ? makeAnimatedProperty(1) : undefined,
+    meshMapOffsetU: type === 'mesh3d' ? makeAnimatedProperty(0) : undefined,
+    meshMapOffsetV: type === 'mesh3d' ? makeAnimatedProperty(0) : undefined,
+    meshMapRotation: type === 'mesh3d' ? makeAnimatedProperty(0) : undefined,
+    meshLightAmbient: type === 'mesh3d' ? makeAnimatedProperty(0.85) : undefined,
+    meshLightKey: type === 'mesh3d' ? makeAnimatedProperty(1.15) : undefined,
+    meshLightAzimuth: type === 'mesh3d' ? makeAnimatedProperty(35) : undefined,
+    meshLightElevation: type === 'mesh3d' ? makeAnimatedProperty(40) : undefined,
+    meshLightFill: type === 'mesh3d' ? makeAnimatedProperty(0.45) : undefined,
+    meshLightAmbientColor: type === 'mesh3d' ? makeAnimatedProperty(parseHexColor('#ffffff')) : undefined,
+    meshLightKeyColor: type === 'mesh3d' ? makeAnimatedProperty(parseHexColor('#ffffff')) : undefined,
     pathData: type === 'path' ? { points: [], closed: false } : undefined,
     pathStrokeWidth: type === 'path' ? 3 : undefined,
     pathStrokeColor: type === 'path' ? '#6366f1' : undefined,

@@ -1,7 +1,10 @@
 import { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { useEditor } from '../EditorContext';
-import type { Clip, LayerType, Track, Transform } from '../types';
-import { hasKeyframeAt, isAnimated, snapToTimes, collectSnapTimes, findClip } from '../types';
+import type { AnimKey, AnimatedProperty, Clip, LayerType, Track } from '../types';
+import {
+  hasKeyframeAt, isAnimated, snapToTimes, collectSnapTimes, findClip,
+  MESH_PROP_DEFS, getAnimProp, ensureAnimProp,
+} from '../types';
 import CurveEditor from './CurveEditor';
 import {
   Eye, EyeOff, Lock, Unlock, Volume2, VolumeX,
@@ -13,7 +16,7 @@ const TRACK_H = 36;
 const PROP_H = 22;
 const RULER_H = 32;
 
-const TRANSFORM_KEYS: { key: keyof Transform; label: string }[] = [
+const TRANSFORM_KEYS: { key: AnimKey; label: string }[] = [
   { key: 'x', label: 'X' },
   { key: 'y', label: 'Y' },
   { key: 'scaleX', label: 'Scale X' },
@@ -22,6 +25,14 @@ const TRANSFORM_KEYS: { key: keyof Transform; label: string }[] = [
   { key: 'opacity', label: 'Opac' },
 ];
 
+function layerAnimRows(clip: Clip): { key: AnimKey; label: string }[] {
+  if (clip.type !== 'mesh3d') return TRANSFORM_KEYS;
+  return [
+    ...TRANSFORM_KEYS,
+    ...MESH_PROP_DEFS.map(d => ({ key: d.key as AnimKey, label: d.label })),
+  ];
+}
+
 type DragMode = 'move' | 'resize-left' | 'resize-right' | 'playhead' | 'keyframe' | 'work-in' | 'work-out' | 'reorder' | null;
 
 export default function Timeline() {
@@ -29,7 +40,7 @@ export default function Timeline() {
     state, togglePlay, seek, selectClip, selectTrack, selectKeyframe,
     toggleTrackVisibility, toggleTrackLock, toggleTrackMute, toggleTrackSolo,
     addTrack, deleteTrack, moveClip, resizeClip, setZoom, setSnapEnabled,
-    setLoop, toggleKeyframe, toggleKeyframes, patchTransform, toggleAnimated, toggleExpanded,
+    setLoop, toggleKeyframe, toggleKeyframes, patchAnim, toggleAnimated, toggleExpanded,
     duplicateClip, setWorkArea, reorderTracks,
   } = useEditor();
   const {
@@ -81,8 +92,8 @@ export default function Timeline() {
   }, [comp.duration, zoom]);
 
   const trackHeight = useCallback((track: Track) => {
-    const expanded = track.clips.some(c => c.id === expandedClipId);
-    return TRACK_H + (expanded ? TRANSFORM_KEYS.length * PROP_H : 0);
+    const expandedClip = track.clips.find(c => c.id === expandedClipId);
+    return TRACK_H + (expandedClip ? layerAnimRows(expandedClip).length * PROP_H : 0);
   }, [expandedClipId]);
 
   const trackAtClientY = useCallback((clientY: number) => {
@@ -161,12 +172,12 @@ export default function Timeline() {
 
   const applyKfDrag = useCallback((
     clipId: string,
-    snapshot: Partial<Transform>,
+    snapshot: Partial<Record<AnimKey, AnimatedProperty>>,
     originTime: number,
     nextTime: number,
   ) => {
-    const patch: Partial<Transform> = {};
-    for (const key of Object.keys(snapshot) as (keyof Transform)[]) {
+    const patch: Partial<Record<AnimKey, AnimatedProperty>> = {};
+    for (const key of Object.keys(snapshot) as AnimKey[]) {
       const prop = snapshot[key];
       if (!prop) continue;
       patch[key] = {
@@ -180,8 +191,8 @@ export default function Timeline() {
           .sort((a, b) => a.time - b.time),
       };
     }
-    patchTransform(clipId, patch);
-  }, [patchTransform]);
+    patchAnim(clipId, patch);
+  }, [patchAnim]);
 
   const onClipMouseDown = useCallback((e: React.MouseEvent, clip: Clip, track: Track, mode: 'move' | 'resize-left' | 'resize-right') => {
     e.stopPropagation();
@@ -293,6 +304,7 @@ export default function Timeline() {
       case 'shape': return 'bg-rose-500/40 border-rose-400';
       case 'path': return 'bg-pink-500/40 border-pink-400';
       case 'mesh3d': return 'bg-cyan-500/40 border-cyan-400';
+      case 'comp': return 'bg-indigo-500/40 border-indigo-400';
       default: return 'bg-slate-500/40 border-slate-400';
     }
   };
@@ -340,6 +352,7 @@ export default function Timeline() {
                 ['shape', 'Shape'],
                 ['path', 'Path'],
                 ['mesh3d', '3D'],
+                ['comp', 'Comp'],
               ] as [LayerType, string][]).map(([type, label]) => (
                 <button
                   key={type}
@@ -448,7 +461,10 @@ export default function Timeline() {
                     </span>
                     {layerClip && (
                       <KeyframeNav
-                        keyed={TRANSFORM_KEYS.some(row => hasKeyframeAt(layerClip.transform[row.key], Math.max(0, currentTime - layerClip.start)))}
+                        keyed={layerAnimRows(layerClip).some(row => {
+                          const prop = getAnimProp(layerClip, row.key);
+                          return !!prop && hasKeyframeAt(prop, Math.max(0, currentTime - layerClip.start));
+                        })}
                         hasPrev={allClipKeyTimes(layerClip).some(t => t < currentTime - 0.001)}
                         hasNext={allClipKeyTimes(layerClip).some(t => t > currentTime + 0.001)}
                         onPrev={() => {
@@ -462,9 +478,13 @@ export default function Timeline() {
                         onAdd={() => {
                           selectClip(layerClip.id);
                           const clipTime = Math.max(0, currentTime - layerClip.start);
-                          const animated = TRANSFORM_KEYS.filter(row => isAnimated(layerClip.transform[row.key]));
-                          const targets = animated.length ? animated.map(r => r.key) : (['x', 'y'] as (keyof Transform)[]);
-                          const toAdd = targets.filter(k => !hasKeyframeAt(layerClip.transform[k], clipTime));
+                          const rows = layerAnimRows(layerClip);
+                          const animated = rows.filter(row => isAnimated(getAnimProp(layerClip, row.key)));
+                          const targets = animated.length ? animated.map(r => r.key) : (['x', 'y'] as AnimKey[]);
+                          const toAdd = targets.filter(k => {
+                            const prop = getAnimProp(layerClip, k);
+                            return !prop || !hasKeyframeAt(prop, clipTime);
+                          });
                           if (toAdd.length) {
                             toggleKeyframes(layerClip.id, toAdd, currentTime);
                             selectKeyframe({ clipId: layerClip.id, key: toAdd[0], time: clipTime });
@@ -473,9 +493,12 @@ export default function Timeline() {
                         onRemove={() => {
                           selectClip(layerClip.id);
                           const clipTime = Math.max(0, currentTime - layerClip.start);
-                          const toRemove = TRANSFORM_KEYS
+                          const toRemove = layerAnimRows(layerClip)
                             .map(r => r.key)
-                            .filter(k => hasKeyframeAt(layerClip.transform[k], clipTime));
+                            .filter(k => {
+                              const prop = getAnimProp(layerClip, k);
+                              return !!prop && hasKeyframeAt(prop, clipTime);
+                            });
                           if (toRemove.length) toggleKeyframes(layerClip.id, toRemove, currentTime);
                         }}
                       />
@@ -484,12 +507,12 @@ export default function Timeline() {
                       <Trash2 size={10} />
                     </button>
                   </div>
-                  {expanded && expandedClip && TRANSFORM_KEYS.map(row => {
-                    const prop = expandedClip.transform[row.key];
+                  {expanded && expandedClip && layerAnimRows(expandedClip).map(row => {
+                    const prop = getAnimProp(expandedClip, row.key) ?? ensureAnimProp(expandedClip, row.key);
                     const clipTime = Math.max(0, currentTime - expandedClip.start);
-                    const keyed = prop ? hasKeyframeAt(prop, clipTime) : false;
+                    const keyed = hasKeyframeAt(prop, clipTime);
                     const animated = isAnimated(prop);
-                    const times = prop?.keyframes.map(k => k.time) ?? [];
+                    const times = prop.keyframes.map(k => k.time);
                     const prev = [...times].reverse().find(tm => tm < clipTime - 0.001);
                     const next = times.find(tm => tm > clipTime + 0.001);
                     return (
@@ -609,11 +632,13 @@ export default function Timeline() {
                           top={8}
                           getCompTime={timeFromEvent}
                           getSnapshot={() => {
-                            const snapshot: Partial<Transform> = {};
+                            const snapshot: Partial<Record<AnimKey, AnimatedProperty>> = {};
                             for (const key of group.keys) {
+                              const prop = getAnimProp(clip, key);
+                              if (!prop) continue;
                               snapshot[key] = {
                                 enabled: true,
-                                keyframes: clip.transform[key].keyframes.map(kf => ({ ...kf })),
+                                keyframes: prop.keyframes.map(kf => ({ ...kf })),
                               };
                             }
                             return snapshot;
@@ -635,56 +660,59 @@ export default function Timeline() {
                     })
                   )}
 
-                  {expanded && expandedClip && TRANSFORM_KEYS.map((row, i) => (
-                    <div
-                      key={row.key}
-                      className="absolute left-0 right-0 border-t border-surface-700/60"
-                      style={{ top: TRACK_H + i * PROP_H, height: PROP_H }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        const at = Math.max(0, Math.min(expandedClip.duration, timeFromEvent(e) - expandedClip.start));
-                        const compTime = expandedClip.start + at;
-                        seek(compTime);
-                        toggleKeyframe(expandedClip.id, row.key, compTime);
-                      }}
-                    >
-                      {isAnimated(expandedClip.transform[row.key]) && expandedClip.transform[row.key].keyframes.map((kf) => {
-                        const isSel = selectedKeyframe?.clipId === expandedClip.id && selectedKeyframe.key === row.key && Math.abs(selectedKeyframe.time - kf.time) < 0.01;
-                        const markerId = kf.id ?? `${expandedClip.id}-${row.key}-${kf.time}`;
-                        return (
-                          <KeyframeMarker
-                            key={markerId}
-                            markerId={markerId}
-                            time={kf.time}
-                            clipStart={expandedClip.start}
-                            clipDuration={expandedClip.duration}
-                            zoom={zoom}
-                            selected={isSel}
-                            top={3}
-                            getCompTime={timeFromEvent}
-                            getSnapshot={() => ({
-                              [row.key]: {
-                                enabled: true,
-                                keyframes: expandedClip.transform[row.key].keyframes.map(k => ({ ...k })),
-                              },
-                            })}
-                            onSelect={() => {
-                              selectClip(expandedClip.id);
-                              selectKeyframe({ clipId: expandedClip.id, key: row.key, time: kf.time });
-                            }}
-                            onDrag={(next, snapshot, originTime) => {
-                              justDraggedRef.current = true;
-                              applyKfDrag(expandedClip.id, snapshot, originTime, next);
-                              selectKeyframe({ clipId: expandedClip.id, key: row.key, time: next });
-                            }}
-                            onDragEnd={() => {
-                              window.setTimeout(() => { justDraggedRef.current = false; }, 0);
-                            }}
-                          />
-                        );
-                      })}
-                    </div>
-                  ))}
+                  {expanded && expandedClip && layerAnimRows(expandedClip).map((row, i) => {
+                    const prop = getAnimProp(expandedClip, row.key) ?? ensureAnimProp(expandedClip, row.key);
+                    return (
+                      <div
+                        key={row.key}
+                        className="absolute left-0 right-0 border-t border-surface-700/60"
+                        style={{ top: TRACK_H + i * PROP_H, height: PROP_H }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          const at = Math.max(0, Math.min(expandedClip.duration, timeFromEvent(e) - expandedClip.start));
+                          const compTime = expandedClip.start + at;
+                          seek(compTime);
+                          toggleKeyframe(expandedClip.id, row.key, compTime);
+                        }}
+                      >
+                        {isAnimated(prop) && prop.keyframes.map((kf) => {
+                          const isSel = selectedKeyframe?.clipId === expandedClip.id && selectedKeyframe.key === row.key && Math.abs(selectedKeyframe.time - kf.time) < 0.01;
+                          const markerId = kf.id ?? `${expandedClip.id}-${row.key}-${kf.time}`;
+                          return (
+                            <KeyframeMarker
+                              key={markerId}
+                              markerId={markerId}
+                              time={kf.time}
+                              clipStart={expandedClip.start}
+                              clipDuration={expandedClip.duration}
+                              zoom={zoom}
+                              selected={isSel}
+                              top={3}
+                              getCompTime={timeFromEvent}
+                              getSnapshot={() => ({
+                                [row.key]: {
+                                  enabled: true,
+                                  keyframes: prop.keyframes.map(k => ({ ...k })),
+                                },
+                              })}
+                              onSelect={() => {
+                                selectClip(expandedClip.id);
+                                selectKeyframe({ clipId: expandedClip.id, key: row.key, time: kf.time });
+                              }}
+                              onDrag={(next, snapshot, originTime) => {
+                                justDraggedRef.current = true;
+                                applyKfDrag(expandedClip.id, snapshot, originTime, next);
+                                selectKeyframe({ clipId: expandedClip.id, key: row.key, time: next });
+                              }}
+                              onDragEnd={() => {
+                                window.setTimeout(() => { justDraggedRef.current = false; }, 0);
+                              }}
+                            />
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}
@@ -711,9 +739,10 @@ export default function Timeline() {
 
 function allClipKeyTimes(clip: Clip): number[] {
   const times = new Set<number>();
-  for (const row of TRANSFORM_KEYS) {
-    if (!isAnimated(clip.transform[row.key])) continue;
-    for (const kf of clip.transform[row.key].keyframes) {
+  for (const row of layerAnimRows(clip)) {
+    const prop = getAnimProp(clip, row.key);
+    if (!prop || !isAnimated(prop)) continue;
+    for (const kf of prop.keyframes) {
       times.add(clip.start + kf.time);
     }
   }
@@ -753,11 +782,11 @@ function KeyframeNav({
   );
 }
 
-function clusteredKeyTimes(clip: Clip): { time: number; keys: (keyof Transform)[]; id: string }[] {
-  const buckets: { time: number; keys: (keyof Transform)[]; ids: string[] }[] = [];
-  for (const row of TRANSFORM_KEYS) {
-    const prop = clip.transform[row.key];
-    if (!isAnimated(prop)) continue;
+function clusteredKeyTimes(clip: Clip): { time: number; keys: AnimKey[]; id: string }[] {
+  const buckets: { time: number; keys: AnimKey[]; ids: string[] }[] = [];
+  for (const row of layerAnimRows(clip)) {
+    const prop = getAnimProp(clip, row.key);
+    if (!prop || !isAnimated(prop)) continue;
     for (const kf of prop.keyframes) {
       const existing = buckets.find(b => Math.abs(b.time - kf.time) < 1 / 60);
       const sid = kf.id || `${clip.id}-${row.key}-${kf.time}`;
@@ -794,9 +823,9 @@ function KeyframeMarker({
   selected: boolean;
   top: number;
   getCompTime: (e: { clientX: number }) => number;
-  getSnapshot: () => Partial<Transform>;
+  getSnapshot: () => Partial<Record<AnimKey, AnimatedProperty>>;
   onSelect: () => void;
-  onDrag: (next: number, snapshot: Partial<Transform>, originTime: number) => void;
+  onDrag: (next: number, snapshot: Partial<Record<AnimKey, AnimatedProperty>>, originTime: number) => void;
   onDragEnd: () => void;
 }) {
   const [live, setLive] = useState<number | null>(null);

@@ -1,9 +1,10 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useEditor } from '../EditorContext';
-import { evalProp, makeTransform, findClip } from '../types';
+import { evalProp, makeTransform, findClip, hydrateTextStyle } from '../types';
 import type { Clip } from '../types';
 import {
-  renderFrame, resolveClipTransform, getSelectionBox, pointInSelection,
+  renderFrame, resolveClipTransform, getSelectionBox, pointInSelection, forEachClipAtTime,
+  layoutText,
 } from '../render';
 import type { SelectionBox } from '../render';
 import { mediaCacheMap } from '../mediaCache';
@@ -19,7 +20,7 @@ const DRAG_THRESHOLD = 4;
 
 export default function Preview() {
   const {
-    state, selectClip, addClip, updateClipProperty, setToolMode,
+    state, selectClip, addClip, updateClipProperty, setToolMode, setActiveComposition,
     setTransformValues, setShowGrid,
   } = useEditor();
   const { currentTime, isPlaying, project, toolMode, selectedClipId, showGrid } = state;
@@ -34,7 +35,8 @@ export default function Preview() {
 
   const [editingClipId, setEditingClipId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
-  const editInputRef = useRef<HTMLInputElement>(null);
+  const editInputRef = useRef<HTMLTextAreaElement>(null);
+  const selectOnEditRef = useRef(false);
   const [hoverHandle, setHoverHandle] = useState<HandleId | null>(null);
 
   const dragRef = useRef<{
@@ -62,7 +64,10 @@ export default function Preview() {
   useEffect(() => {
     if (editingClipId && editInputRef.current) {
       editInputRef.current.focus();
-      editInputRef.current.select();
+      if (selectOnEditRef.current) {
+        editInputRef.current.select();
+        selectOnEditRef.current = false;
+      }
     }
   }, [editingClipId]);
 
@@ -110,27 +115,24 @@ export default function Preview() {
     assetCache.current = mediaCacheMap(project.assets);
 
     if (!isPlaying) {
-      for (const track of comp.tracks) {
-        if (!track.visible) continue;
-        for (const clip of track.clips) {
-          if (clip.type !== 'video' || !clip.assetId) continue;
-          if (currentTime < clip.start || currentTime >= clip.start + clip.duration) continue;
-          const video = assetCache.current.get(clip.assetId) as HTMLVideoElement | undefined;
-          if (!video) continue;
-          const sourceTime = clip.sourceStart + (currentTime - clip.start);
-          if (Math.abs(video.currentTime - sourceTime) > 0.04) {
-            video.currentTime = sourceTime;
-          }
+      forEachClipAtTime(comp, currentTime, project, (clip, hostTime) => {
+        if (clip.type !== 'video' || !clip.assetId) return;
+        const video = assetCache.current.get(clip.assetId) as HTMLVideoElement | undefined;
+        if (!video) return;
+        const sourceTime = clip.sourceStart + (hostTime - clip.start);
+        if (Math.abs(video.currentTime - sourceTime) > 0.04) {
+          video.currentTime = sourceTime;
         }
-      }
+      });
     }
 
     renderFrame(ctx, currentTime, comp, project, assetCache.current, {
       showGrid,
       showSafeZones: true,
       selectedClipId: toolMode === 'pen' ? null : selectedClipId,
+      hideClipId: editingClipId,
     });
-  }, [currentTime, isPlaying, comp, project, showGrid, selectedClipId, toolMode, meshTick]);
+  }, [currentTime, isPlaying, comp, project, showGrid, selectedClipId, toolMode, meshTick, editingClipId]);
 
   const canvasToComp = useCallback((e: { clientX: number; clientY: number }) => {
     const canvas = canvasRef.current;
@@ -143,8 +145,8 @@ export default function Preview() {
   }, []);
 
   const selectionFor = useCallback((clip: Clip): SelectionBox => {
-    return getSelectionBox(clip, currentTime, comp.width, comp.height, comp, getAsset);
-  }, [currentTime, comp, getAsset]);
+    return getSelectionBox(clip, currentTime, comp.width, comp.height, comp, getAsset, project);
+  }, [currentTime, comp, getAsset, project]);
 
   const handleAt = useCallback((px: number, py: number, clip: Clip): HandleId | null => {
     if (clip.type === 'path' || clip.type === 'audio') {
@@ -179,7 +181,8 @@ export default function Preview() {
     return null;
   }, [currentTime, comp, handleAt]);
 
-  const startEditText = (clip: Clip) => {
+  const startEditText = (clip: Clip, selectAll = false) => {
+    selectOnEditRef.current = selectAll;
     setEditingClipId(clip.id);
     setEditValue(clip.textContent || '');
   };
@@ -194,6 +197,7 @@ export default function Preview() {
       const transform = makeTransform(centerRelativeX, centerRelativeY);
       const clipId = addClip(undefined, 'text', currentTime, 5, undefined, transform);
       selectClip(clipId);
+      selectOnEditRef.current = true;
       setEditingClipId(clipId);
       setEditValue('Frame Lab');
       setToolMode('pointer');
@@ -266,11 +270,16 @@ export default function Preview() {
     if (toolMode !== 'pointer') return;
     const { x, y } = canvasToComp(e);
     const hit = hitTest(x, y);
+    if (hit?.type === 'comp' && hit.compositionId) {
+      selectClip(hit.id);
+      setActiveComposition(hit.compositionId);
+      return;
+    }
     if (hit?.type === 'text') {
       selectClip(hit.id);
       startEditText(hit);
     }
-  }, [toolMode, canvasToComp, hitTest, selectClip]);
+  }, [toolMode, canvasToComp, hitTest, selectClip, setActiveComposition]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -350,17 +359,34 @@ export default function Preview() {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
     const xf = resolveClipTransform(clip, currentTime, comp.width, comp.height, comp);
+    const style = hydrateTextStyle(clip.textStyle);
+    const layout = layoutText(clip.textContent || '', style);
+    const canvasScale = rect.width / comp.width;
     const canvasX = comp.width / 2 + xf.x;
     const canvasY = comp.height / 2 + xf.y;
-    const screenX = rect.left + canvasX * (rect.width / comp.width);
-    const screenY = rect.top + canvasY * (rect.height / comp.height);
-    const fontSize = (clip.textStyle?.fontSize || 48) * (rect.width / comp.width);
-    return { left: screenX, top: screenY, fontSize };
+    const screenX = rect.left + canvasX * canvasScale;
+    const screenY = rect.top + canvasY * canvasScale;
+    const width = Math.max(layout.width, style.fontSize * 0.5) * canvasScale * Math.abs(xf.scaleX);
+    const height = Math.max(layout.height, style.fontSize * style.lineHeight) * canvasScale * Math.abs(xf.scaleY);
+    const fontSize = style.fontSize * canvasScale * Math.abs(xf.scaleX);
+    const originY = style.valign === 'top' ? '0%' : style.valign === 'bottom' ? '100%' : '50%';
+    const translateY = style.valign === 'top' ? '0%' : style.valign === 'bottom' ? '-100%' : '-50%';
+    return {
+      left: screenX,
+      top: screenY,
+      width,
+      height,
+      fontSize,
+      rotation: xf.rotation,
+      originY,
+      translateY,
+      style,
+    };
   }, [editingClipId, comp, currentTime]);
 
   const editPos = getEditInputPosition();
 
-  const handleEditChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleEditChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setEditValue(val);
     if (editingClipId) updateClipProperty(editingClipId, 'textContent', val);
@@ -371,8 +397,12 @@ export default function Preview() {
     setEditValue('');
   };
 
-  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' || e.key === 'Escape') finishEditing();
+  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    e.stopPropagation();
+    if (e.key === 'Escape' || ((e.ctrlKey || e.metaKey) && e.key === 'Enter')) {
+      e.preventDefault();
+      finishEditing();
+    }
   };
 
   const cursor = (() => {
@@ -445,22 +475,31 @@ export default function Preview() {
       </div>
 
       {editingClipId && editPos && (
-        <input
+        <textarea
           ref={editInputRef}
-          type="text"
           value={editValue}
           onChange={handleEditChange}
           onBlur={finishEditing}
           onKeyDown={handleEditKeyDown}
-          className="fixed z-50 bg-transparent text-white outline-none border-none px-0 py-0 whitespace-nowrap"
+          className="fixed z-50 bg-transparent text-white outline-none border border-accent/40 rounded-sm px-0 py-0 overflow-hidden resize-none"
           style={{
             left: editPos.left,
             top: editPos.top,
+            width: editPos.width,
+            height: editPos.height,
             fontSize: `${editPos.fontSize}px`,
-            fontFamily: 'Inter, sans-serif',
-            lineHeight: 1,
-            transform: 'translate(-50%, -50%)',
-            minWidth: '20px',
+            fontFamily: editPos.style.fontFamily,
+            fontWeight: editPos.style.bold ? 700 : 400,
+            fontStyle: editPos.style.italic ? 'italic' : 'normal',
+            textDecoration: editPos.style.underline ? 'underline' : 'none',
+            textTransform: editPos.style.allCaps ? 'uppercase' : 'none',
+            textAlign: editPos.style.align === 'justify' ? 'justify' : editPos.style.align,
+            lineHeight: editPos.style.lineHeight,
+            letterSpacing: `${editPos.style.letterSpacing * (editPos.fontSize / Math.max(editPos.style.fontSize, 1))}px`,
+            color: editPos.style.color,
+            transform: `translate(-50%, ${editPos.translateY}) rotate(${editPos.rotation}deg)`,
+            transformOrigin: `50% ${editPos.originY}`,
+            whiteSpace: editPos.style.boxWidth > 0 ? 'pre-wrap' : 'pre',
             textShadow: '0 0 4px rgba(0,0,0,0.8)',
           }}
           spellCheck={false}

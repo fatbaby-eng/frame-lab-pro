@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
-import { evalProp } from './types';
+import { evalMeshColor, evalMeshNumber } from './types';
 import type { Asset, Clip } from './types';
 
 const SIZE = 512;
@@ -80,22 +80,22 @@ function geometryFor(shape: string, segments: number): THREE.BufferGeometry {
   }
 }
 
-function setLightRig(clip: Clip) {
+function setLightRig(clip: Clip, clipTime: number) {
   if (!hemi || !keyLight || !fillLight || !rimLight) return;
-  const amb = clip.meshLightAmbient ?? 0.85;
-  const key = clip.meshLightKey ?? 1.15;
-  const fill = clip.meshLightFill ?? 0.45;
-  const az = ((clip.meshLightAzimuth ?? 35) * Math.PI) / 180;
-  const el = ((clip.meshLightElevation ?? 40) * Math.PI) / 180;
+  const amb = evalMeshNumber(clip, 'meshLightAmbient', clipTime);
+  const key = evalMeshNumber(clip, 'meshLightKey', clipTime);
+  const fill = evalMeshNumber(clip, 'meshLightFill', clipTime);
+  const az = (evalMeshNumber(clip, 'meshLightAzimuth', clipTime) * Math.PI) / 180;
+  const el = (evalMeshNumber(clip, 'meshLightElevation', clipTime) * Math.PI) / 180;
   const dist = 3.4;
   const x = Math.cos(el) * Math.sin(az) * dist;
   const y = Math.sin(el) * dist;
   const z = Math.cos(el) * Math.cos(az) * dist;
 
   hemi.intensity = amb;
-  hemi.color.set(hexToInt(clip.meshLightAmbientColor || '#ffffff'));
+  hemi.color.set(hexToInt(evalMeshColor(clip, 'meshLightAmbientColor', clipTime, '#ffffff')));
   keyLight.intensity = key;
-  keyLight.color.set(hexToInt(clip.meshLightKeyColor || '#ffffff'));
+  keyLight.color.set(hexToInt(evalMeshColor(clip, 'meshLightKeyColor', clipTime, '#ffffff')));
   keyLight.position.set(x, y, z);
   fillLight.intensity = fill;
   fillLight.position.set(-x * 0.8, y * 0.2, z * 0.4);
@@ -124,6 +124,7 @@ function textureFor(url: string): THREE.Texture {
 function applyMap(
   mat: THREE.MeshStandardMaterial,
   clip: Clip,
+  clipTime: number,
   getAsset?: (id: string) => Asset | undefined,
   opts?: { preserveExisting?: boolean },
 ) {
@@ -131,9 +132,9 @@ function applyMap(
   const asset = mapId && getAsset ? getAsset(mapId) : undefined;
   if (asset?.url) {
     const tex = textureFor(asset.url);
-    tex.repeat.set(clip.meshMapRepeatU ?? 1, clip.meshMapRepeatV ?? 1);
-    tex.offset.set(clip.meshMapOffsetU ?? 0, clip.meshMapOffsetV ?? 0);
-    tex.rotation = ((clip.meshMapRotation ?? 0) * Math.PI) / 180;
+    tex.repeat.set(evalMeshNumber(clip, 'meshMapRepeatU', clipTime), evalMeshNumber(clip, 'meshMapRepeatV', clipTime));
+    tex.offset.set(evalMeshNumber(clip, 'meshMapOffsetU', clipTime), evalMeshNumber(clip, 'meshMapOffsetV', clipTime));
+    tex.rotation = (evalMeshNumber(clip, 'meshMapRotation', clipTime) * Math.PI) / 180;
     tex.center.set(0.5, 0.5);
     mat.map = tex;
   } else if (!opts?.preserveExisting) {
@@ -141,13 +142,13 @@ function applyMap(
   }
 }
 
-function applyStandard(mat: THREE.MeshStandardMaterial, clip: Clip, getAsset?: (id: string) => Asset | undefined) {
-  mat.color.set(hexToInt(clip.meshColor || '#6366f1'));
+function applyStandard(mat: THREE.MeshStandardMaterial, clip: Clip, clipTime: number, getAsset?: (id: string) => Asset | undefined) {
+  mat.color.set(hexToInt(evalMeshColor(clip, 'meshColor', clipTime, '#6366f1')));
   mat.wireframe = !!clip.meshWireframe;
-  mat.metalness = clip.meshMetalness ?? 0.38;
-  mat.roughness = clip.meshRoughness ?? 0.32;
+  mat.metalness = evalMeshNumber(clip, 'meshMetalness', clipTime);
+  mat.roughness = evalMeshNumber(clip, 'meshRoughness', clipTime);
   mat.side = clip.meshShape === 'plane' ? THREE.DoubleSide : THREE.FrontSide;
-  applyMap(mat, clip, getAsset);
+  applyMap(mat, clip, clipTime, getAsset);
   mat.needsUpdate = true;
 }
 
@@ -262,7 +263,7 @@ function toStandard(mat: THREE.Material): THREE.Material {
   return mat;
 }
 
-function tintModel(root: THREE.Object3D, clip: Clip, getAsset?: (id: string) => Asset | undefined) {
+function tintModel(root: THREE.Object3D, clip: Clip, clipTime: number, getAsset?: (id: string) => Asset | undefined) {
   root.traverse(child => {
     if (!(child instanceof THREE.Mesh)) return;
     const src = Array.isArray(child.material) ? child.material : [child.material];
@@ -274,10 +275,10 @@ function tintModel(root: THREE.Object3D, clip: Clip, getAsset?: (id: string) => 
         continue;
       }
       mat.wireframe = !!clip.meshWireframe;
-      mat.color.set(hexToInt(clip.meshColor || '#ffffff'));
-      mat.metalness = clip.meshMetalness ?? 0.38;
-      mat.roughness = clip.meshRoughness ?? 0.32;
-      applyMap(mat, clip, getAsset, { preserveExisting: true });
+      mat.color.set(hexToInt(evalMeshColor(clip, 'meshColor', clipTime, '#ffffff')));
+      mat.metalness = evalMeshNumber(clip, 'meshMetalness', clipTime);
+      mat.roughness = evalMeshNumber(clip, 'meshRoughness', clipTime);
+      applyMap(mat, clip, clipTime, getAsset, { preserveExisting: true });
       mat.needsUpdate = true;
     }
   });
@@ -292,11 +293,11 @@ export function renderMeshLayer(
   try {
     ensure();
     if (!renderer || !scene || !camera) return null;
-    setLightRig(clip);
+    setLightRig(clip, clipTime);
 
-    const rx = ((clip.meshRotX ? evalProp(clip.meshRotX, clipTime) : 18) * Math.PI) / 180;
-    const ry = ((clip.meshRotY ? evalProp(clip.meshRotY, clipTime) : 0) * Math.PI) / 180;
-    const rz = ((clip.meshRotZ ? evalProp(clip.meshRotZ, clipTime) : 0) * Math.PI) / 180;
+    const rx = (evalMeshNumber(clip, 'meshRotX', clipTime) * Math.PI) / 180;
+    const ry = (evalMeshNumber(clip, 'meshRotY', clipTime) * Math.PI) / 180;
+    const rz = (evalMeshNumber(clip, 'meshRotZ', clipTime) * Math.PI) / 180;
 
     const modelAsset = clip.meshShape === 'model' && clip.assetId && getAsset
       ? getAsset(clip.assetId)
@@ -308,15 +309,15 @@ export function renderMeshLayer(
       if (group) {
         showModel(group);
         group.rotation.set(rx, ry, rz);
-        tintModel(group, clip, getAsset);
+        tintModel(group, clip, clipTime, getAsset);
         frameObject(group);
       } else {
         hideModel();
-        const segs = clip.meshSegments ?? 32;
+        const segs = evalMeshNumber(clip, 'meshSegments', clipTime);
         syncPrimitive('cube', segs);
         if (primitive) {
           primitive.visible = true;
-          applyStandard(primitive.material as THREE.MeshStandardMaterial, clip, getAsset);
+          applyStandard(primitive.material as THREE.MeshStandardMaterial, clip, clipTime, getAsset);
           primitive.rotation.set(rx, ry, rz);
           frameObject(primitive);
         }
@@ -324,11 +325,11 @@ export function renderMeshLayer(
     } else {
       hideModel();
       const shape = clip.meshShape && clip.meshShape !== 'model' ? clip.meshShape : 'cube';
-      const segs = clip.meshSegments ?? 32;
+      const segs = evalMeshNumber(clip, 'meshSegments', clipTime);
       syncPrimitive(shape, segs);
       if (!primitive) return null;
       primitive.visible = true;
-      applyStandard(primitive.material as THREE.MeshStandardMaterial, clip, getAsset);
+      applyStandard(primitive.material as THREE.MeshStandardMaterial, clip, clipTime, getAsset);
       primitive.rotation.set(rx, ry, rz);
       frameObject(primitive);
     }

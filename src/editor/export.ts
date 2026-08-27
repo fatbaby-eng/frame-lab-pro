@@ -1,4 +1,4 @@
-import { renderFrame } from './render';
+import { forEachClipAtTime, renderFrame } from './render';
 import type { Composition, Project } from './types';
 import { createExportAudioTrack } from './audioEngine';
 
@@ -98,7 +98,7 @@ export async function exportToWebM(
       const time = startTime + frame / fps;
 
       void (async () => {
-        await seekVideoAssets(time, comp, assetCache);
+        await seekVideoAssets(time, comp, project, assetCache);
         renderFrame(ctx, time, comp, project, assetCache);
         onProgress({
           frame,
@@ -151,7 +151,7 @@ export async function exportToGIF(
   for (let frame = 0; frame < totalFrames; frame++) {
     const time = startTime + frame / fps;
 
-    await seekVideoAssets(time, comp, assetCache);
+    await seekVideoAssets(time, comp, project, assetCache);
     renderFrame(ctx, time, comp, project, assetCache);
     outCtx.drawImage(canvas, 0, 0, gifW, gifH);
 
@@ -208,31 +208,26 @@ export async function exportToGIF(
 async function seekVideoAssets(
   time: number,
   comp: Composition,
+  project: Project,
   assetCache: Map<string, HTMLImageElement | HTMLVideoElement>
 ) {
   const waits: Promise<void>[] = [];
-  for (const track of comp.tracks) {
-    if (!track.visible) continue;
-    for (const clip of track.clips) {
-      if (clip.type !== 'video' || !clip.assetId) continue;
-      if (time < clip.start || time >= clip.start + clip.duration) continue;
-
-      const video = assetCache.get(clip.assetId) as HTMLVideoElement | undefined;
-      if (!video) continue;
-
-      const clipTime = time - clip.start + clip.sourceStart;
-      if (Math.abs(video.currentTime - clipTime) <= 0.05) continue;
-      waits.push(new Promise(resolve => {
-        const done = () => {
-          video.removeEventListener('seeked', done);
-          resolve();
-        };
-        video.addEventListener('seeked', done);
-        video.currentTime = clipTime;
-        window.setTimeout(done, 120);
-      }));
-    }
-  }
+  forEachClipAtTime(comp, time, project, (clip, hostTime) => {
+    if (clip.type !== 'video' || !clip.assetId) return;
+    const video = assetCache.get(clip.assetId) as HTMLVideoElement | undefined;
+    if (!video) return;
+    const clipTime = hostTime - clip.start + clip.sourceStart;
+    if (Math.abs(video.currentTime - clipTime) <= 0.05) return;
+    waits.push(new Promise(resolve => {
+      const done = () => {
+        video.removeEventListener('seeked', done);
+        resolve();
+      };
+      video.addEventListener('seeked', done);
+      video.currentTime = clipTime;
+      window.setTimeout(done, 120);
+    }));
+  });
   if (waits.length) await Promise.all(waits);
 }
 

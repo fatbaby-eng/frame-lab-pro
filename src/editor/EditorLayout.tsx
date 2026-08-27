@@ -6,12 +6,13 @@ import Preview from './components/Preview';
 import PropertiesPanel from './components/PropertiesPanel';
 import AssetPanel from './components/AssetPanel';
 import ExportDialog from './components/ExportDialog';
+import AlignBar from './components/AlignBar';
 import KeyboardShortcutsModal from '../components/KeyboardShortcutsModal';
 import { useKeyboardShortcuts, type Shortcut } from '../hooks/useKeyboardShortcuts';
 import {
   Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight,
   Save, FolderOpen, Film, MousePointer2, PenTool, Type, Square,
-  Undo2, Redo2, FilePlus, Repeat, HelpCircle,
+  Undo2, Redo2, FilePlus, Repeat, HelpCircle, Plus, X,
 } from 'lucide-react';
 
 export default function EditorLayout() {
@@ -20,11 +21,14 @@ export default function EditorLayout() {
     setToolMode, undo, redo, deleteClip, duplicateClip, splitClip, copyClip,
     pasteClip, nudgeClip, saveProjectFile, loadProjectFile, newProject, setLoop,
     jumpKeyframe, trimClipEdge, toggleExpanded, removeKeyframeAt, setWorkArea,
+    setActiveComposition, addComposition, deleteComposition, renameComposition,
+    alignClipToComp,
   } = useEditor();
   const { currentTime, isPlaying, project, toolMode, selectedClipId, canUndo, canRedo, loop, selectedKeyframe } = state;
   const [timelineH, setTimelineH] = useState(280);
   const [exportOpen, setExportOpen] = useState(false);
   const [tcEdit, setTcEdit] = useState<string | null>(null);
+  const [renamingCompId, setRenamingCompId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const comp = project.compositions.find(c => c.id === project.activeCompositionId)!;
@@ -125,6 +129,7 @@ export default function EditorLayout() {
           <input
             value={project.name}
             onChange={e => setProjectName(e.target.value)}
+            onKeyDown={e => e.stopPropagation()}
             className="bg-transparent text-sm font-medium text-slate-300 hover:text-white focus:text-white outline-none border-b border-transparent focus:border-accent px-1 min-w-[80px] w-full max-w-[160px] truncate"
           />
         </div>
@@ -184,6 +189,13 @@ export default function EditorLayout() {
         >
           <Square size={14} />
         </button>
+
+        {selectedClipId && (
+          <>
+            <div className="w-px h-5 bg-surface-600 shrink-0" />
+            <AlignBar compact onAlign={align => alignClipToComp(selectedClipId, align)} />
+          </>
+        )}
 
         <div className="w-px h-5 bg-surface-600 shrink-0" />
 
@@ -246,6 +258,89 @@ export default function EditorLayout() {
             Export
           </button>
         </div>
+      </div>
+
+      <div className="h-8 bg-surface-800 border-b border-surface-600 flex items-center px-2 gap-1 shrink-0">
+        <span className="text-[9px] text-slate-500 uppercase tracking-wider px-1 shrink-0">Comps</span>
+        <div className="flex items-center gap-0.5 min-w-0 flex-1 overflow-x-auto scrollbar-hide">
+          {project.compositions.map(c => {
+            const active = c.id === project.activeCompositionId;
+            if (renamingCompId === c.id) {
+              return (
+                <input
+                  key={c.id}
+                  type="text"
+                  autoFocus
+                  defaultValue={c.name}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onClick={e => e.stopPropagation()}
+                  onKeyDown={e => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                    if (e.key === 'Escape') setRenamingCompId(null);
+                  }}
+                  onBlur={e => {
+                    const next = e.target.value.trim();
+                    if (next) renameComposition(c.id, next);
+                    setRenamingCompId(null);
+                  }}
+                  className="max-w-[10rem] px-2 py-1 rounded text-[11px] bg-surface-700 border border-accent text-white outline-none shrink-0"
+                />
+              );
+            }
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => setActiveComposition(c.id)}
+                onDoubleClick={e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setRenamingCompId(c.id);
+                }}
+                className={`group flex items-center gap-1 max-w-[10rem] px-2 py-1 rounded text-[11px] shrink-0 ${
+                  active ? 'bg-accent text-white' : 'text-slate-400 hover:text-white hover:bg-surface-700'
+                }`}
+                title={`${c.name} — double-click to rename`}
+              >
+                <span className="truncate">{c.name}</span>
+                {project.compositions.length > 1 && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={e => {
+                      e.stopPropagation();
+                      if (!deleteComposition(c.id)) showToast('Cannot delete — this composition is nested in another');
+                    }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.stopPropagation();
+                        if (!deleteComposition(c.id)) showToast('Cannot delete — this composition is nested in another');
+                      }
+                    }}
+                    className={`rounded p-0.5 ${active ? 'hover:bg-white/20' : 'hover:bg-surface-600'} ${active ? 'opacity-80' : 'opacity-0 group-hover:opacity-100'}`}
+                    title="Delete composition"
+                  >
+                    <X size={10} />
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            addComposition();
+            showToast('Added composition');
+          }}
+          className="shrink-0 flex items-center gap-1 px-2 py-1 rounded text-[11px] text-slate-400 hover:text-white hover:bg-surface-700"
+          title="New composition"
+        >
+          <Plus size={12} />
+          New
+        </button>
       </div>
 
       <div className="flex-1 flex overflow-hidden">

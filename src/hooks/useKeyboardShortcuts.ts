@@ -14,10 +14,16 @@ export function useKeyboardShortcuts(
   const [showHelp, setShowHelp] = useState(false);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    // Ignore if typing in an input/textarea
-    const target = e.target as HTMLElement;
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-      return;
+    // Ignore if typing in a form field (composition name, layer name, etc.)
+    const target = e.target;
+    if (target instanceof HTMLElement) {
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) {
+        return;
+      }
+      if (target.closest('input, textarea, select, [contenteditable="true"]')) {
+        return;
+      }
     }
 
     const pressed = [];

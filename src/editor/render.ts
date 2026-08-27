@@ -1,13 +1,32 @@
 import {
-  evalTransform, drawPath, getPathPosition, getPathTangent, findClip,
+  evalTransform, drawPath, getPathPosition, getPathTangent, findClip, nestedCompTime,
+  hydrateTextStyle,
 } from './types';
-import type { Clip, Composition, Project, Asset, WorldTransform, LayerEffect } from './types';
+import type { Clip, Composition, Project, Asset, WorldTransform, LayerEffect, CompAlign, TextStyle } from './types';
 import { renderMeshLayer, MESH_SPRITE } from './mesh3d';
 
 export interface RenderOptions {
   showGrid?: boolean;
   showSafeZones?: boolean;
   selectedClipId?: string | null;
+  /** Skip drawing this clip's pixels (preview inline edit overlay). */
+  hideClipId?: string | null;
+  /** Skip overlays when drawing a nested composition. */
+  nested?: boolean;
+  visitedCompIds?: Set<string>;
+}
+
+const nestedCanvasCache = new Map<string, HTMLCanvasElement>();
+
+function canvasForNested(clipId: string, width: number, height: number): HTMLCanvasElement {
+  let canvas = nestedCanvasCache.get(clipId);
+  if (!canvas) {
+    canvas = document.createElement('canvas');
+    nestedCanvasCache.set(clipId, canvas);
+  }
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  return canvas;
 }
 
 /**
@@ -22,14 +41,18 @@ export function renderFrame(
   assetCache: Map<string, HTMLImageElement | HTMLVideoElement>,
   options: RenderOptions = {}
 ) {
-  const { showGrid = false, showSafeZones = false, selectedClipId = null } = options;
+  const { showGrid = false, showSafeZones = false, selectedClipId = null, hideClipId = null, nested = false } = options;
+  const visited = new Set(options.visitedCompIds);
+  if (visited.has(comp.id)) return;
+  visited.add(comp.id);
+
   const cw = comp.width;
   const ch = comp.height;
 
   ctx.fillStyle = comp.backgroundColor || '#0a0a0f';
   ctx.fillRect(0, 0, cw, ch);
 
-  if (showGrid) {
+  if (!nested && showGrid) {
     ctx.strokeStyle = '#1e1e2e';
     ctx.lineWidth = 1;
     const gridSize = 50;
@@ -44,7 +67,7 @@ export function renderFrame(
     ctx.beginPath(); ctx.moveTo(0, ch / 2); ctx.lineTo(cw, ch / 2); ctx.stroke();
   }
 
-  if (showSafeZones) {
+  if (!nested && showSafeZones) {
     ctx.strokeStyle = '#ffffff10';
     ctx.lineWidth = 1;
     ctx.setLineDash([5, 5]);
@@ -70,13 +93,13 @@ export function renderFrame(
   const getAsset = (id: string): Asset | undefined => project.assets.find(a => a.id === id);
 
   for (const { clip } of visibleClips) {
-    renderClip(ctx, clip, time, cw, ch, comp, assetCache, getAsset);
+    renderClip(ctx, clip, time, cw, ch, comp, project, assetCache, getAsset, visited, hideClipId);
   }
 
-  if (selectedClipId) {
+  if (!nested && selectedClipId) {
     const selected = visibleClips.find(v => v.clip.id === selectedClipId);
     if (selected) {
-      drawSelection(ctx, selected.clip, time, cw, ch, comp, getAsset);
+      drawSelection(ctx, selected.clip, time, cw, ch, comp, getAsset, project);
     }
   }
 }
@@ -132,17 +155,174 @@ export function resolveClipTransform(
   return local;
 }
 
-export function clipLocalSize(clip: Clip, getAsset?: (id: string) => Asset | undefined): { w: number; h: number } {
+export interface TextLine {
+  text: string;
+  width: number;
+  lastInPara: boolean;
+}
+
+export interface TextLayout {
+  lines: TextLine[];
+  width: number;
+  height: number;
+  style: TextStyle;
+}
+
+let measureCanvas: HTMLCanvasElement | null = null;
+
+function measureCtx(): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null;
+  if (!measureCanvas) measureCanvas = document.createElement('canvas');
+  return measureCanvas.getContext('2d');
+}
+
+export function applyTextFont(ctx: CanvasRenderingContext2D, style: TextStyle) {
+  ctx.font = `${style.bold ? 'bold ' : ''}${style.italic ? 'italic ' : ''}${style.fontSize}px ${style.fontFamily}`;
+  try {
+    ctx.letterSpacing = `${style.letterSpacing}px`;
+  } catch {
+    /* older canvas */
+  }
+}
+
+function measureLine(ctx: CanvasRenderingContext2D, text: string, style: TextStyle): number {
+  applyTextFont(ctx, style);
+  const base = ctx.measureText(text).width;
+  if (style.letterSpacing && !('letterSpacing' in ctx)) {
+    return base + Math.max(0, text.length - 1) * style.letterSpacing;
+  }
+  return base;
+}
+
+export function layoutText(content: string, rawStyle?: Partial<TextStyle> | null): TextLayout {
+  const style = hydrateTextStyle(rawStyle);
+  const ctx = measureCtx();
+  const lineH = style.fontSize * style.lineHeight;
+  const paras = (content || '').split('\n');
+  const lines: TextLine[] = [];
+  const wrapW = style.boxWidth > 0 ? style.boxWidth : Infinity;
+
+  const pushLine = (text: string, lastInPara: boolean) => {
+    const width = ctx ? measureLine(ctx, text, style) : text.length * style.fontSize * 0.56;
+    lines.push({ text, width, lastInPara });
+  };
+
+  for (let pi = 0; pi < paras.length; pi++) {
+    const raw = style.allCaps ? paras[pi].toUpperCase() : paras[pi];
+    if (!raw) {
+      pushLine('', true);
+      continue;
+    }
+    if (!Number.isFinite(wrapW)) {
+      pushLine(raw, true);
+      continue;
+    }
+    const words = raw.split(/(\s+)/);
+    let current = '';
+    for (const part of words) {
+      const trial = current + part;
+      const w = ctx ? measureLine(ctx, trial, style) : trial.length * style.fontSize * 0.56;
+      if (w > wrapW && current.trim()) {
+        pushLine(current.replace(/\s+$/, ''), false);
+        current = part.replace(/^\s+/, '');
+      } else {
+        current = trial;
+      }
+    }
+    pushLine(current.replace(/\s+$/, ''), true);
+  }
+
+  if (lines.length === 0) pushLine('', true);
+
+  const contentW = Math.max(...lines.map(l => l.width), style.fontSize * 0.5);
+  const width = style.boxWidth > 0 ? style.boxWidth : contentW;
+  const paraBreaks = Math.max(0, paras.length - 1);
+  const height = Math.max(lines.length, 1) * lineH + paraBreaks * style.paragraphGap;
+  return { lines, width, height, style };
+}
+
+function lineX(align: TextStyle['align'], boxWidth: number, lineWidth: number): number {
+  if (align === 'left' || align === 'justify') return -boxWidth / 2;
+  if (align === 'right') return boxWidth / 2 - lineWidth;
+  return -lineWidth / 2;
+}
+
+function drawTextBlock(ctx: CanvasRenderingContext2D, content: string, rawStyle?: Partial<TextStyle> | null) {
+  const layout = layoutText(content, rawStyle);
+  const { lines, width, height, style } = layout;
+  const lineH = style.fontSize * style.lineHeight;
+  applyTextFont(ctx, style);
+  ctx.fillStyle = style.color;
+  ctx.strokeStyle = style.color;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+
+  let startY = -height / 2;
+  if (style.valign === 'top') startY = 0;
+  else if (style.valign === 'bottom') startY = -height;
+
+  let y = startY;
+  let paraIndex = 0;
+  const paraCount = (content || '').split('\n').length;
+
+  for (const line of lines) {
+    const justify = style.align === 'justify' && !line.lastInPara && line.text.trim() && style.boxWidth > 0;
+    if (justify) {
+      const words = line.text.trim().split(/\s+/);
+      const total = words.reduce((s, w) => s + measureLine(ctx, w, style), 0);
+      const gap = words.length > 1 ? (width - total) / (words.length - 1) : 0;
+      let x = -width / 2;
+      for (const word of words) {
+        ctx.fillText(word, x, y);
+        x += measureLine(ctx, word, style) + gap;
+      }
+    } else {
+      const x = lineX(style.align, width, line.width);
+      ctx.fillText(line.text, x, y);
+    }
+    if (style.underline && line.text) {
+      const x0 = style.align === 'justify' ? -width / 2 : lineX(style.align, width, line.width);
+      const w = style.align === 'justify' && !line.lastInPara ? width : line.width;
+      ctx.beginPath();
+      ctx.lineWidth = Math.max(1, style.fontSize * 0.06);
+      ctx.moveTo(x0, y + style.fontSize * 0.92);
+      ctx.lineTo(x0 + w, y + style.fontSize * 0.92);
+      ctx.stroke();
+    }
+    y += lineH;
+    if (line.lastInPara) {
+      paraIndex += 1;
+      if (paraIndex < paraCount) y += style.paragraphGap;
+    }
+  }
+}
+
+export function textBlockOffset(style: TextStyle, height: number): { ox: number; oy: number } {
+  if (style.valign === 'top') return { ox: 0, oy: height / 2 };
+  if (style.valign === 'bottom') return { ox: 0, oy: -height / 2 };
+  return { ox: 0, oy: 0 };
+}
+
+export function clipLocalSize(
+  clip: Clip,
+  getAsset?: (id: string) => Asset | undefined,
+  project?: Project,
+): { w: number; h: number } {
   switch (clip.type) {
     case 'text': {
-      const fs = clip.textStyle?.fontSize || 48;
-      const len = Math.max(clip.textContent?.length || 1, 1);
-      return { w: Math.max(len * fs * 0.56, fs), h: fs * 1.25 };
+      const layout = layoutText(clip.textContent || '', clip.textStyle);
+      return { w: layout.width, h: layout.height };
     }
     case 'shape':
       return { w: 100, h: 100 };
     case 'mesh3d':
       return { w: MESH_SPRITE, h: MESH_SPRITE };
+    case 'comp': {
+      const inner = clip.compositionId && project
+        ? project.compositions.find(c => c.id === clip.compositionId)
+        : undefined;
+      return { w: inner?.width || 400, h: inner?.height || 300 };
+    }
     case 'video':
     case 'image': {
       const asset = clip.assetId && getAsset ? getAsset(clip.assetId) : null;
@@ -169,14 +349,21 @@ export function getSelectionBox(
   cw: number,
   ch: number,
   comp: Composition,
-  getAsset?: (id: string) => Asset | undefined
+  getAsset?: (id: string) => Asset | undefined,
+  project?: Project,
 ): SelectionBox {
   const xf = resolveClipTransform(clip, time, cw, ch, comp);
-  const { w: lw, h: lh } = clipLocalSize(clip, getAsset);
+  const { w: lw, h: lh } = clipLocalSize(clip, getAsset, project);
   const w = Math.max(24, lw * Math.abs(xf.scaleX));
   const h = Math.max(24, lh * Math.abs(xf.scaleY));
-  const cx = cw / 2 + xf.x;
-  const cy = ch / 2 + xf.y;
+  let cx = cw / 2 + xf.x;
+  let cy = ch / 2 + xf.y;
+  if (clip.type === 'text') {
+    const off = textBlockOffset(hydrateTextStyle(clip.textStyle), h);
+    const rad0 = (xf.rotation * Math.PI) / 180;
+    cx += off.ox * Math.cos(rad0) - off.oy * Math.sin(rad0);
+    cy += off.ox * Math.sin(rad0) + off.oy * Math.cos(rad0);
+  }
   const rad = (xf.rotation * Math.PI) / 180;
   const rot = (x: number, y: number) => ({
     x: cx + x * Math.cos(rad) - y * Math.sin(rad),
@@ -205,8 +392,12 @@ export function pointInSelection(px: number, py: number, box: SelectionBox): boo
   return Math.abs(lx) <= box.w / 2 && Math.abs(ly) <= box.h / 2;
 }
 
-export function clipHitRadius(clip: Clip, getAsset: (id: string) => Asset | undefined): number {
-  const { w, h } = clipLocalSize(clip, getAsset);
+export function clipHitRadius(
+  clip: Clip,
+  getAsset: (id: string) => Asset | undefined,
+  project?: Project,
+): number {
+  const { w, h } = clipLocalSize(clip, getAsset, project);
   return Math.hypot(w, h) / 2;
 }
 
@@ -236,8 +427,11 @@ function renderClip(
   cw: number,
   ch: number,
   comp: Composition,
+  project: Project,
   assetCache: Map<string, HTMLImageElement | HTMLVideoElement>,
-  getAsset: (id: string) => Asset | undefined
+  getAsset: (id: string) => Asset | undefined,
+  visitedComps: Set<string>,
+  hideClipId?: string | null,
 ) {
   const xf = resolveClipTransform(clip, currentTime, cw, ch, comp);
 
@@ -275,13 +469,9 @@ function renderClip(
       break;
     }
     case 'text': {
-      if (clip.textContent && clip.textStyle) {
-        const style = clip.textStyle;
-        ctx.font = `${style.bold ? 'bold ' : ''}${style.italic ? 'italic ' : ''}${style.fontSize}px ${style.fontFamily}`;
-        ctx.fillStyle = style.color;
-        ctx.textAlign = style.align;
-        ctx.textBaseline = 'middle';
-        ctx.fillText(clip.textContent, 0, 0);
+      if (hideClipId && clip.id === hideClipId) break;
+      if (clip.textContent != null && clip.textStyle) {
+        drawTextBlock(ctx, clip.textContent, clip.textStyle);
       }
       break;
     }
@@ -335,6 +525,24 @@ function renderClip(
       }
       break;
     }
+    case 'comp': {
+      const inner = clip.compositionId
+        ? project.compositions.find(c => c.id === clip.compositionId)
+        : undefined;
+      if (inner && !visitedComps.has(inner.id)) {
+        const off = canvasForNested(clip.id, inner.width, inner.height);
+        const offCtx = off.getContext('2d');
+        if (offCtx) {
+          const innerTime = nestedCompTime(clip, currentTime);
+          renderFrame(offCtx, innerTime, inner, project, assetCache, {
+            nested: true,
+            visitedCompIds: visitedComps,
+          });
+          ctx.drawImage(off, -inner.width / 2, -inner.height / 2, inner.width, inner.height);
+        }
+      }
+      break;
+    }
     case 'audio':
       break;
     case 'path': {
@@ -363,10 +571,11 @@ function drawSelection(
   cw: number,
   ch: number,
   comp: Composition,
-  getAsset?: (id: string) => Asset | undefined
+  getAsset?: (id: string) => Asset | undefined,
+  project?: Project,
 ) {
   if (clip.type === 'path' || clip.type === 'audio') return;
-  const box = getSelectionBox(clip, time, cw, ch, comp, getAsset);
+  const box = getSelectionBox(clip, time, cw, ch, comp, getAsset, project);
   ctx.save();
   ctx.translate(box.cx, box.cy);
   ctx.rotate((box.rotation * Math.PI) / 180);
@@ -394,5 +603,121 @@ function drawSelection(
   ctx.arc(box.rotateHandle.x, box.rotateHandle.y, 5, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
+}
+
+export function forEachClipAtTime(
+  comp: Composition,
+  time: number,
+  project: Project,
+  visit: (clip: Clip, hostTime: number, host: Composition) => void,
+  ancestors: Set<string> = new Set(),
+) {
+  if (ancestors.has(comp.id)) return;
+  const nextAncestors = new Set(ancestors);
+  nextAncestors.add(comp.id);
+  const anySolo = comp.tracks.some(t => t.solo);
+  for (const track of comp.tracks) {
+    if (!track.visible) continue;
+    if (anySolo && !track.solo) continue;
+    for (const clip of track.clips) {
+      if (time < clip.start || time >= clip.start + clip.duration) continue;
+      visit(clip, time, comp);
+      if (clip.type === 'comp' && clip.compositionId) {
+        const inner = project.compositions.find(c => c.id === clip.compositionId);
+        if (inner) {
+          forEachClipAtTime(inner, nestedCompTime(clip, time), project, visit, nextAncestors);
+        }
+      }
+    }
+  }
+}
+
+/** Local x/y that place the layer's visual box against the composition. */
+export function alignedLocalPosition(
+  clip: Clip,
+  time: number,
+  comp: Composition,
+  align: CompAlign,
+  getAsset?: (id: string) => Asset | undefined,
+  project?: Project,
+): { x: number; y: number } {
+  const cw = comp.width;
+  const ch = comp.height;
+  const xf = resolveClipTransform(clip, time, cw, ch, comp);
+  const { w: lw, h: lh } = clipLocalSize(clip, getAsset, project);
+  const w = Math.max(1, lw * Math.abs(xf.scaleX));
+  const h = Math.max(1, lh * Math.abs(xf.scaleY));
+  let cx = cw / 2 + xf.x;
+  let cy = ch / 2 + xf.y;
+  if (clip.type === 'text') {
+    const off = textBlockOffset(hydrateTextStyle(clip.textStyle), h);
+    const rad0 = (xf.rotation * Math.PI) / 180;
+    cx += off.ox * Math.cos(rad0) - off.oy * Math.sin(rad0);
+    cy += off.ox * Math.sin(rad0) + off.oy * Math.cos(rad0);
+  }
+
+  const hw = w / 2;
+  const hh = h / 2;
+  const rad = (xf.rotation * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const pts = [
+    [-hw, -hh], [hw, -hh], [-hw, hh], [hw, hh],
+  ].map(([x, y]) => ({
+    x: cx + x * cos - y * sin,
+    y: cy + x * sin + y * cos,
+  }));
+  const minX = Math.min(pts[0].x, pts[1].x, pts[2].x, pts[3].x);
+  const maxX = Math.max(pts[0].x, pts[1].x, pts[2].x, pts[3].x);
+  const minY = Math.min(pts[0].y, pts[1].y, pts[2].y, pts[3].y);
+  const maxY = Math.max(pts[0].y, pts[1].y, pts[2].y, pts[3].y);
+
+  let deltaX = 0;
+  let deltaY = 0;
+  switch (align) {
+    case 'left':
+      deltaX = -minX;
+      break;
+    case 'hcenter':
+      deltaX = cw / 2 - (minX + maxX) / 2;
+      break;
+    case 'right':
+      deltaX = cw - maxX;
+      break;
+    case 'top':
+      deltaY = -minY;
+      break;
+    case 'vcenter':
+      deltaY = ch / 2 - (minY + maxY) / 2;
+      break;
+    case 'bottom':
+      deltaY = ch - maxY;
+      break;
+  }
+
+  const clipTime = Math.max(0, time - clip.start);
+  const local = evalTransform(clip.transform, clipTime);
+
+  if (!clip.parentId) {
+    return { x: local.x + deltaX, y: local.y + deltaY };
+  }
+
+  const parent = findClip(comp, clip.parentId);
+  if (!parent) {
+    return { x: local.x + deltaX, y: local.y + deltaY };
+  }
+
+  const worldX = xf.x + deltaX;
+  const worldY = xf.y + deltaY;
+  const p = resolveClipTransform(parent, time, cw, ch, comp);
+  const sx = p.scaleX === 0 ? 1 : p.scaleX;
+  const sy = p.scaleY === 0 ? 1 : p.scaleY;
+  const rx = (worldX - p.x) / sx;
+  const ry = (worldY - p.y) / sy;
+  const prad = (p.rotation * Math.PI) / 180;
+  return {
+    x: rx * Math.cos(prad) + ry * Math.sin(prad),
+    y: -rx * Math.sin(prad) + ry * Math.cos(prad),
+  };
 }
 
