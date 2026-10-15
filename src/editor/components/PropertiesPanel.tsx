@@ -861,10 +861,13 @@ function PropRow({ label, value, min, max, step, onChange, onKeyframe, onToggleA
   onEasing?: (e: Easing) => void;
 }) {
   const scrub = useRef<{ x: number; value: number } | null>(null);
+  // A saved project once handed this a string; never call a number method
+  // on the raw prop.
+  const safeValue = Number.isFinite(value) ? value : 0;
 
   const onScrubDown = (e: React.MouseEvent) => {
     e.preventDefault();
-    scrub.current = { x: e.clientX, value };
+    scrub.current = { x: e.clientX, value: safeValue };
     const move = (ev: MouseEvent) => {
       if (!scrub.current) return;
       const dx = ev.clientX - scrub.current.x;
@@ -901,7 +904,7 @@ function PropRow({ label, value, min, max, step, onChange, onKeyframe, onToggleA
         </label>
         <input
           type="number"
-          value={Number(value.toFixed(step < 1 ? 3 : 1))}
+          value={Number(safeValue.toFixed(step < 1 ? 3 : 1))}
           onChange={e => onChange(parseFloat(e.target.value) || 0)}
           className="min-w-0 flex-1 px-1.5 py-0.5 rounded bg-surface-700 border border-surface-600 text-[10px] text-white focus:border-accent outline-none text-right"
           step={step}
@@ -913,7 +916,7 @@ function PropRow({ label, value, min, max, step, onChange, onKeyframe, onToggleA
         min={min}
         max={max}
         step={step}
-        value={value}
+        value={safeValue}
         onChange={e => onChange(parseFloat(e.target.value))}
         className="w-full accent-accent h-3.5"
       />

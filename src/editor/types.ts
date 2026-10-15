@@ -73,10 +73,22 @@ export function newKeyframeId(): string {
 }
 
 export function hydrateAnimatedProperty(prop: AnimatedProperty): AnimatedProperty {
+  // Saved projects can carry a value or time that is a string or missing (an
+  // input box once wrote strings; older saves lack fields). Coerce to finite
+  // numbers so nothing downstream calls a number method on a string.
+  const keyframes = (prop.keyframes || [])
+    .map(k => ({ ...k, id: k.id || newKeyframeId(), time: toNum(k.time, 0), value: toNum(k.value, 0) }))
+    .filter(k => Number.isFinite(k.time));
   return {
-    enabled: prop.enabled ?? prop.keyframes.length > 1,
-    keyframes: prop.keyframes.map(k => ({ ...k, id: k.id || newKeyframeId() })),
+    enabled: prop.enabled ?? keyframes.length > 1,
+    keyframes,
   };
+}
+
+/** A finite number, or the fallback. */
+export function toNum(v: unknown, fallback: number): number {
+  const n = typeof v === 'number' ? v : parseFloat(String(v));
+  return Number.isFinite(n) ? n : fallback;
 }
 
 export interface Transform {
@@ -173,9 +185,9 @@ export function easingAt(prop: AnimatedProperty, time: number): Easing {
 
 // Evaluate an animated property at a given time
 export function evalProp(prop: AnimatedProperty, time: number): number {
-  const kf = prop.keyframes;
+  const kf = prop?.keyframes ?? [];
   if (kf.length === 0) return 0;
-  if (kf.length === 1) return kf[0].value;
+  if (kf.length === 1) return toNum(kf[0].value, 0);
 
   // Find surrounding keyframes
   let before = kf[0];
