@@ -13,7 +13,7 @@ import {
   newKeyframeId, nextClipName, wouldCreateCompCycle, compositionIsReferenced,
   ensureMeshAnimProps, ensureAnimProp, getAnimProp, withAnimProp, clipAnimKeys, isMeshColorKey,
 } from './types';
-import { alignedLocalPosition } from './render';
+import { alignedLocalPosition, clipWorldBounds, type AlignBounds } from './render';
 
 const AUTOSAVE_KEY = 'framelab-autosave-v3';
 
@@ -23,6 +23,8 @@ export interface EditorState {
   isPlaying: boolean;
   zoom: number;
   selectedClipId: string | null;
+  /** Every selected clip (shift-click adds); selectedClipId is the primary one. */
+  selectedClipIds: string[];
   selectedTrackId: string | null;
   snapEnabled: boolean;
   showGrid: boolean;
@@ -53,7 +55,7 @@ interface EditorContextType {
   setShowGrid: (v: boolean) => void;
   setWorkArea: (start: number, end: number) => void;
   // Selection
-  selectClip: (id: string | null) => void;
+  selectClip: (id: string | null, additive?: boolean) => void;
   selectTrack: (id: string | null) => void;
   // Tool mode
   setToolMode: (mode: ToolMode) => void;
@@ -86,7 +88,10 @@ interface EditorContextType {
   copyClip: (clipId: string) => void;
   pasteClip: () => void;
   nudgeClip: (clipId: string, dx: number, dy: number) => void;
+  nudgeClips: (clipIds: string[], dx: number, dy: number) => void;
   alignClipToComp: (clipId: string, align: CompAlign) => void;
+  alignClips: (clipIds: string[], align: CompAlign) => void;
+  setTransformValuesMany: (entries: { clipId: string; values: Partial<Record<keyof Transform, number>> }[], easing?: Easing) => void;
   toggleExpanded: (clipId?: string) => void;
   // Track operations
   toggleTrackVisibility: (trackId: string) => void;
@@ -184,7 +189,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     currentTime: 0,
     isPlaying: false,
     zoom: 60,
-    selectedClipId: null,
+    selectedClipId: null, selectedClipIds: [],
     selectedTrackId: null,
     snapEnabled: true,
     showGrid: true,
@@ -361,14 +366,25 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     })));
   }, [mutate]);
 
-  const selectClip = useCallback((id: string | null) => {
+  const selectClip = useCallback((id: string | null, additive = false) => {
     setState(s => {
-      const clip = id ? findClip(getComp(s), id) : null;
+      let ids: string[];
+      let primary: string | null;
+      if (additive && id) {
+        // Shift-click: toggle membership; the last added becomes primary.
+        ids = s.selectedClipIds.includes(id) ? s.selectedClipIds.filter(x => x !== id) : [...s.selectedClipIds, id];
+        primary = ids.includes(id) ? id : (ids[ids.length - 1] ?? null);
+      } else {
+        ids = id ? [id] : [];
+        primary = id;
+      }
+      const clip = primary ? findClip(getComp(s), primary) : null;
       return {
         ...s,
-        selectedClipId: id,
+        selectedClipId: primary,
+        selectedClipIds: ids,
         selectedTrackId: clip?.trackId ?? s.selectedTrackId,
-        selectedKeyframe: id && s.selectedKeyframe?.clipId === id ? s.selectedKeyframe : null,
+        selectedKeyframe: primary && s.selectedKeyframe?.clipId === primary ? s.selectedKeyframe : null,
       };
     });
   }, []);
@@ -378,6 +394,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       ...s,
       selectedKeyframe: kf,
       selectedClipId: kf?.clipId ?? s.selectedClipId,
+      selectedClipIds: kf ? [kf.clipId] : s.selectedClipIds,
     }));
   }, []);
 
@@ -385,7 +402,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     setState(s => {
       const id = clipId ?? s.selectedClipId;
       if (!id) return s;
-      return { ...s, expandedClipId: s.expandedClipId === id ? null : id, selectedClipId: id };
+      return { ...s, expandedClipId: s.expandedClipId === id ? null : id, selectedClipId: id, selectedClipIds: [id] };
     });
   }, []);
 
@@ -399,6 +416,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         ...s,
         selectedTrackId: id,
         selectedClipId: clip?.id ?? null,
+        selectedClipIds: clip ? [clip.id] : [],
         selectedKeyframe: clip && s.selectedKeyframe?.clipId === clip.id ? s.selectedKeyframe : null,
       };
     });
@@ -460,7 +478,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
           ),
         }, clip.start, clip.duration);
       });
-      return { ...next, selectedClipId: clip.id };
+      return { ...next, selectedClipId: clip.id, selectedClipIds: [clip.id] };
     });
     return clip.id;
   }, [mutate]);
@@ -479,7 +497,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
           tracks: tracks.filter(t => t.clips.length > 0 || t.id !== sourceId),
         };
       });
-      return { ...next, selectedClipId: s.selectedClipId === clipId ? null : s.selectedClipId };
+      return { ...next, selectedClipId: s.selectedClipId === clipId ? null : s.selectedClipId, selectedClipIds: s.selectedClipIds.filter(id => id !== clipId) };
     });
   }, [mutate]);
 
@@ -609,6 +627,11 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 
   const setTransformValues = useCallback((clipId: string, values: Partial<Record<keyof Transform, number>>, easing: Easing = 'ease-in-out') => {
     mutate('transform', s => applyTransformValues(s, clipId, values, easing));
+  }, [mutate]);
+
+  // One undo step for a whole group (a drag of several selected layers).
+  const setTransformValuesMany = useCallback((entries: { clipId: string; values: Partial<Record<keyof Transform, number>> }[], easing: Easing = 'ease-in-out') => {
+    mutate('transform', s => entries.reduce((acc, e) => applyTransformValues(acc, e.clipId, e.values, easing), s));
   }, [mutate]);
 
   const setAnimValue = useCallback((clipId: string, key: AnimKey, value: number, easing: Easing = 'ease-in-out') => {
@@ -854,6 +877,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       return {
         ...updateComp(s, c => ({ ...c, tracks })),
         selectedClipId: copy.id,
+        selectedClipIds: [copy.id],
       };
     });
     return newId;
@@ -920,6 +944,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
           ),
         })),
         selectedClipId: copy.id,
+        selectedClipIds: [copy.id],
       };
     });
   }, [mutate]);
@@ -945,6 +970,41 @@ export function EditorProvider({ children }: { children: ReactNode }) {
           clips: t.clips.map(cl => cl.id === clipId ? { ...cl, transform: newTransform } : cl),
         })),
       }));
+    });
+  }, [mutate]);
+
+  const nudgeClips = useCallback((clipIds: string[], dx: number, dy: number) => {
+    mutate('nudge', s => clipIds.reduce((acc, clipId) => {
+      const clip = findClip(getComp(acc), clipId);
+      if (!clip) return acc;
+      const clipTime = Math.max(0, acc.currentTime - clip.start);
+      return applyTransformValues(acc, clipId, {
+        x: evalProp(clip.transform.x, clipTime) + dx,
+        y: evalProp(clip.transform.y, clipTime) + dy,
+      }, 'ease-in-out');
+    }, s));
+  }, [mutate]);
+
+  // One clip aligns to the composition; several align to the group's own
+  // bounds, so "align left" lines their left edges up without stacking them.
+  const alignClips = useCallback((clipIds: string[], align: CompAlign) => {
+    mutate('align', s => {
+      const comp = getComp(s);
+      const getAsset = (id: string) => s.project.assets.find(a => a.id === id);
+      const clips = clipIds.map(id => findClip(comp, id)).filter((c): c is Clip => !!c);
+      if (!clips.length) return s;
+      let target: AlignBounds | undefined;
+      if (clips.length > 1) {
+        const bs = clips.map(c => clipWorldBounds(c, s.currentTime, comp, getAsset, s.project));
+        target = {
+          minX: Math.min(...bs.map(b => b.minX)), maxX: Math.max(...bs.map(b => b.maxX)),
+          minY: Math.min(...bs.map(b => b.minY)), maxY: Math.max(...bs.map(b => b.maxY)),
+        };
+      }
+      return clips.reduce((acc, clip) => {
+        const pos = alignedLocalPosition(clip, acc.currentTime, getComp(acc), align, getAsset, acc.project, target);
+        return applyTransformValues(acc, clip.id, { x: pos.x, y: pos.y }, 'ease-in-out');
+      }, s);
     });
   }, [mutate]);
 
@@ -1117,7 +1177,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         if (s.selectedClipId || s.selectedTrackId || s.selectedKeyframe) {
           return {
             ...s,
-            selectedClipId: null,
+            selectedClipId: null, selectedClipIds: [],
             selectedTrackId: null,
             expandedClipId: null,
             selectedKeyframe: null,
@@ -1131,7 +1191,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         project: { ...s.project, activeCompositionId: id },
         currentTime: Math.min(s.currentTime, next?.duration ?? s.currentTime),
         isPlaying: false,
-        selectedClipId: null,
+        selectedClipId: null, selectedClipIds: [],
         selectedTrackId: null,
         expandedClipId: null,
         selectedKeyframe: null,
@@ -1160,7 +1220,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         },
         currentTime: 0,
         isPlaying: false,
-        selectedClipId: null,
+        selectedClipId: null, selectedClipIds: [],
         selectedTrackId: null,
         expandedClipId: null,
         selectedKeyframe: null,
@@ -1211,7 +1271,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
           activeCompositionId: clone.id,
         },
         currentTime: 0,
-        selectedClipId: null,
+        selectedClipId: null, selectedClipIds: [],
         selectedTrackId: null,
         expandedClipId: null,
       };
@@ -1235,6 +1295,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         project: { ...s.project, compositions: remaining, activeCompositionId: nextActive },
         currentTime: s.project.activeCompositionId === id ? 0 : s.currentTime,
         selectedClipId: s.project.activeCompositionId === id ? null : s.selectedClipId,
+        selectedClipIds: s.project.activeCompositionId === id ? [] : s.selectedClipIds,
         selectedTrackId: s.project.activeCompositionId === id ? null : s.selectedTrackId,
         expandedClipId: s.project.activeCompositionId === id ? null : s.expandedClipId,
       };
@@ -1270,7 +1331,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         ...comp,
         tracks: [...comp.tracks, { ...newTrack, clips: [clip] }],
       }, clip.start, clip.duration));
-      return { ...next, selectedClipId: clip.id };
+      return { ...next, selectedClipId: clip.id, selectedClipIds: [clip.id] };
     });
     return clipId;
   }, [mutate]);
@@ -1284,7 +1345,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       project: createDefaultProject(),
       currentTime: 0,
       isPlaying: false,
-      selectedClipId: null,
+      selectedClipId: null, selectedClipIds: [],
       selectedTrackId: null,
       canUndo: false,
       canRedo: false,
@@ -1324,7 +1385,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       project: parsed,
       currentTime: 0,
       isPlaying: false,
-      selectedClipId: null,
+      selectedClipId: null, selectedClipIds: [],
       selectedTrackId: null,
       canUndo: false,
       canRedo: false,
@@ -1357,7 +1418,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       project: parsed,
       currentTime: 0,
       isPlaying: false,
-      selectedClipId: null,
+      selectedClipId: null, selectedClipIds: [],
       canUndo: false,
       canRedo: false,
     }));
@@ -1412,7 +1473,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     addClip, deleteClip, moveClip, resizeClip, updateClipTransform, updateClipProperty,
     setTransformValue, setTransformValues, setAnimValue, toggleKeyframe, toggleKeyframes, toggleAnimated, moveKeyframe,
     patchTransform, patchAnim, removeKeyframeAt, setKeyframeEasing, patchKeyframe, setTrackVolume, jumpKeyframe,
-    duplicateClip, splitClip, trimClipEdge, copyClip, pasteClip, nudgeClip, alignClipToComp, toggleExpanded,
+    duplicateClip, splitClip, trimClipEdge, copyClip, pasteClip, nudgeClip, nudgeClips, alignClipToComp, alignClips, setTransformValuesMany, toggleExpanded,
     toggleTrackVisibility, toggleTrackLock, toggleTrackMute, toggleTrackSolo, addTrack, deleteTrack, reorderTracks,
     addAsset, updateAsset, deleteAsset,
     setProjectName, setCompositionDuration, updateComposition, renameComposition,

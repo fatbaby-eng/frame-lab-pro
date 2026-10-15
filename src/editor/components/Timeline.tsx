@@ -44,7 +44,7 @@ export default function Timeline() {
     duplicateClip, setWorkArea, reorderTracks,
   } = useEditor();
   const {
-    currentTime, zoom, isPlaying, selectedClipId, selectedTrackId,
+    currentTime, zoom, isPlaying, selectedClipId, selectedClipIds, selectedTrackId,
     snapEnabled, loop, expandedClipId, selectedKeyframe,
   } = state;
 
@@ -198,6 +198,7 @@ export default function Timeline() {
     e.stopPropagation();
     if (track.locked) return;
     if (mode === 'move' && (e.target as HTMLElement).closest('[data-kf-marker]')) return;
+    if (e.shiftKey && mode === 'move') { selectClip(clip.id, true); return; }
     let targetId = clip.id;
     let origStart = clip.start;
     if (e.altKey && mode === 'move') {
@@ -213,9 +214,9 @@ export default function Timeline() {
     setDragOrigStart(origStart);
     setDragOrigDuration(clip.duration);
     setDragOrigTrackId(clip.trackId);
-    selectClip(targetId);
+    if (!selectedClipIds.includes(targetId)) selectClip(targetId);
     setIsDragging(true);
-  }, [selectClip, duplicateClip, timeFromEvent]);
+  }, [selectClip, duplicateClip, timeFromEvent, selectedClipIds]);
 
   const onPlayheadMouseDown = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -589,14 +590,14 @@ export default function Timeline() {
                   {track.clips.map(clip => {
                     const left = timeToPx(clip.start);
                     const width = Math.max(timeToPx(clip.duration), 4);
-                    const isSelected = selectedClipId === clip.id;
+                    const isSelected = selectedClipId === clip.id || selectedClipIds.includes(clip.id);
                     return (
                       <div
                         key={clip.id}
                         className={`absolute top-1 h-7 rounded-md border ${clipColor(clip.type)} ${isSelected ? 'ring-2 ring-white/50 z-10' : ''} ${track.locked ? 'cursor-not-allowed' : 'cursor-ew-resize'} overflow-hidden`}
                         style={{ left, width }}
                         onMouseDown={(e) => onClipMouseDown(e, clip, track, 'move')}
-                        onClick={(e) => { e.stopPropagation(); selectClip(clip.id); }}
+                        onClick={(e) => { e.stopPropagation(); if (!e.shiftKey && !selectedClipIds.includes(clip.id)) selectClip(clip.id); }}
                         onDoubleClick={(e) => { e.stopPropagation(); toggleExpanded(clip.id); }}
                       >
                         {!track.locked && (

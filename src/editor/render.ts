@@ -9,6 +9,8 @@ export interface RenderOptions {
   showGrid?: boolean;
   showSafeZones?: boolean;
   selectedClipId?: string | null;
+  /** Every selected clip; all get an outline, the primary one the handles too. */
+  selectedClipIds?: string[];
   /** Skip drawing this clip's pixels (preview inline edit overlay). */
   hideClipId?: string | null;
   /** Skip overlays when drawing a nested composition. */
@@ -41,7 +43,7 @@ export function renderFrame(
   assetCache: Map<string, HTMLImageElement | HTMLVideoElement>,
   options: RenderOptions = {}
 ) {
-  const { showGrid = false, showSafeZones = false, selectedClipId = null, hideClipId = null, nested = false } = options;
+  const { showGrid = false, showSafeZones = false, selectedClipId = null, selectedClipIds = [], hideClipId = null, nested = false } = options;
   const visited = new Set(options.visitedCompIds);
   if (visited.has(comp.id)) return;
   visited.add(comp.id);
@@ -96,10 +98,11 @@ export function renderFrame(
     renderClip(ctx, clip, time, cw, ch, comp, project, assetCache, getAsset, visited, hideClipId);
   }
 
-  if (!nested && selectedClipId) {
-    const selected = visibleClips.find(v => v.clip.id === selectedClipId);
-    if (selected) {
-      drawSelection(ctx, selected.clip, time, cw, ch, comp, getAsset, project);
+  if (!nested && (selectedClipId || selectedClipIds.length)) {
+    const ids = new Set<string>(selectedClipIds);
+    if (selectedClipId) ids.add(selectedClipId);
+    for (const v of visibleClips) {
+      if (ids.has(v.clip.id)) drawSelection(ctx, v.clip, time, cw, ch, comp, getAsset, project);
     }
   }
 }
@@ -633,14 +636,16 @@ export function forEachClipAtTime(
 }
 
 /** Local x/y that place the layer's visual box against the composition. */
-export function alignedLocalPosition(
+export interface AlignBounds { minX: number; maxX: number; minY: number; maxY: number }
+
+/** Axis-aligned bounds of a clip's drawn box, in composition pixels. */
+export function clipWorldBounds(
   clip: Clip,
   time: number,
   comp: Composition,
-  align: CompAlign,
   getAsset?: (id: string) => Asset | undefined,
   project?: Project,
-): { x: number; y: number } {
+): AlignBounds {
   const cw = comp.width;
   const ch = comp.height;
   const xf = resolveClipTransform(clip, time, cw, ch, comp);
@@ -655,44 +660,51 @@ export function alignedLocalPosition(
     cx += off.ox * Math.cos(rad0) - off.oy * Math.sin(rad0);
     cy += off.ox * Math.sin(rad0) + off.oy * Math.cos(rad0);
   }
-
   const hw = w / 2;
   const hh = h / 2;
   const rad = (xf.rotation * Math.PI) / 180;
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
-  const pts = [
-    [-hw, -hh], [hw, -hh], [-hw, hh], [hw, hh],
-  ].map(([x, y]) => ({
+  const pts = [[-hw, -hh], [hw, -hh], [-hw, hh], [hw, hh]].map(([x, y]) => ({
     x: cx + x * cos - y * sin,
     y: cy + x * sin + y * cos,
   }));
-  const minX = Math.min(pts[0].x, pts[1].x, pts[2].x, pts[3].x);
-  const maxX = Math.max(pts[0].x, pts[1].x, pts[2].x, pts[3].x);
-  const minY = Math.min(pts[0].y, pts[1].y, pts[2].y, pts[3].y);
-  const maxY = Math.max(pts[0].y, pts[1].y, pts[2].y, pts[3].y);
+  return {
+    minX: Math.min(pts[0].x, pts[1].x, pts[2].x, pts[3].x),
+    maxX: Math.max(pts[0].x, pts[1].x, pts[2].x, pts[3].x),
+    minY: Math.min(pts[0].y, pts[1].y, pts[2].y, pts[3].y),
+    maxY: Math.max(pts[0].y, pts[1].y, pts[2].y, pts[3].y),
+  };
+}
+
+/**
+ * Local x/y that puts the clip's box on an edge or centre of `target`
+ * (the composition when omitted; the selection's bounds for group align).
+ */
+export function alignedLocalPosition(
+  clip: Clip,
+  time: number,
+  comp: Composition,
+  align: CompAlign,
+  getAsset?: (id: string) => Asset | undefined,
+  project?: Project,
+  target?: AlignBounds,
+): { x: number; y: number } {
+  const cw = comp.width;
+  const ch = comp.height;
+  const xf = resolveClipTransform(clip, time, cw, ch, comp);
+  const { minX, maxX, minY, maxY } = clipWorldBounds(clip, time, comp, getAsset, project);
+  const tb = target ?? { minX: 0, maxX: cw, minY: 0, maxY: ch };
 
   let deltaX = 0;
   let deltaY = 0;
   switch (align) {
-    case 'left':
-      deltaX = -minX;
-      break;
-    case 'hcenter':
-      deltaX = cw / 2 - (minX + maxX) / 2;
-      break;
-    case 'right':
-      deltaX = cw - maxX;
-      break;
-    case 'top':
-      deltaY = -minY;
-      break;
-    case 'vcenter':
-      deltaY = ch / 2 - (minY + maxY) / 2;
-      break;
-    case 'bottom':
-      deltaY = ch - maxY;
-      break;
+    case 'left': deltaX = tb.minX - minX; break;
+    case 'hcenter': deltaX = (tb.minX + tb.maxX) / 2 - (minX + maxX) / 2; break;
+    case 'right': deltaX = tb.maxX - maxX; break;
+    case 'top': deltaY = tb.minY - minY; break;
+    case 'vcenter': deltaY = (tb.minY + tb.maxY) / 2 - (minY + maxY) / 2; break;
+    case 'bottom': deltaY = tb.maxY - maxY; break;
   }
 
   const clipTime = Math.max(0, time - clip.start);

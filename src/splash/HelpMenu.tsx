@@ -10,6 +10,7 @@ interface Props {
 }
 
 const TIPS = [
+  'Shift-click layers on the canvas or the timeline to select several at once. Drag, nudge with Shift+arrows, or align them as a group; animated layers get a keyframe at the playhead when they move.',
   'Every layer gets its own track. Twirl a track (U) to see its properties and keyframes.',
   'Set the work area with B and N, then loop it with the repeat button to tune one move.',
   'Drag media, audio, or a GLB/GLTF/OBJ model onto the Assets panel. 3D layers stay inside the layer bounds.',

@@ -23,9 +23,10 @@ export default function EditorLayout() {
     pasteClip, nudgeClip, saveProjectFile, loadProjectFile, newProject, setLoop,
     jumpKeyframe, trimClipEdge, toggleExpanded, removeKeyframeAt, setWorkArea,
     setActiveComposition, addComposition, deleteComposition, renameComposition,
-    alignClipToComp,
+    alignClips, nudgeClips,
   } = useEditor();
-  const { currentTime, isPlaying, project, toolMode, selectedClipId, canUndo, canRedo, loop, selectedKeyframe } = state;
+  const { currentTime, isPlaying, project, toolMode, selectedClipId, selectedClipIds, canUndo, canRedo, loop, selectedKeyframe } = state;
+  const selection = selectedClipIds.length ? selectedClipIds : (selectedClipId ? [selectedClipId] : []);
   const [timelineH, setTimelineH] = useState(280);
   const [exportOpen, setExportOpen] = useState(false);
   const [tcEdit, setTcEdit] = useState<string | null>(null);
@@ -52,11 +53,11 @@ export default function EditorLayout() {
     { key: 'g', label: 'Shape tool', scope: 'Tools', action: () => setToolMode('shape') },
     { key: 'delete', label: 'Delete keyframe or clip', scope: 'Edit', action: () => {
       if (selectedKeyframe) removeKeyframeAt(selectedKeyframe.clipId, selectedKeyframe.key, selectedKeyframe.time);
-      else if (selectedClipId) deleteClip(selectedClipId);
+      else if (selection.length) selection.forEach(id => deleteClip(id));
     } },
     { key: 'backspace', label: 'Delete keyframe or clip', scope: 'Edit', action: () => {
       if (selectedKeyframe) removeKeyframeAt(selectedKeyframe.clipId, selectedKeyframe.key, selectedKeyframe.time);
-      else if (selectedClipId) deleteClip(selectedClipId);
+      else if (selection.length) selection.forEach(id => deleteClip(id));
     } },
     { key: 'j', label: 'Previous keyframe', scope: 'Playback', action: () => jumpKeyframe(-1) },
     { key: 'k', label: 'Next keyframe', scope: 'Playback', action: () => jumpKeyframe(1) },
@@ -78,14 +79,14 @@ export default function EditorLayout() {
     { key: 'ctrl+c', label: 'Copy clip', scope: 'Edit', action: () => { if (selectedClipId) copyClip(selectedClipId); } },
     { key: 'ctrl+v', label: 'Paste clip', scope: 'Edit', action: pasteClip },
     { key: 'ctrl+s', label: 'Save project', scope: 'Project', action: () => { void saveProjectFile().then(() => showToast('Project saved')); } },
-    { key: 'shift+arrowleft', label: 'Nudge left', scope: 'Edit', action: () => { if (selectedClipId) nudgeClip(selectedClipId, -10, 0); } },
-    { key: 'shift+arrowright', label: 'Nudge right', scope: 'Edit', action: () => { if (selectedClipId) nudgeClip(selectedClipId, 10, 0); } },
-    { key: 'shift+arrowup', label: 'Nudge up', scope: 'Edit', action: () => { if (selectedClipId) nudgeClip(selectedClipId, 0, -10); } },
-    { key: 'shift+arrowdown', label: 'Nudge down', scope: 'Edit', action: () => { if (selectedClipId) nudgeClip(selectedClipId, 0, 10); } },
+    { key: 'shift+arrowleft', label: 'Nudge left', scope: 'Edit', action: () => { nudgeClips(selection, -10, 0); } },
+    { key: 'shift+arrowright', label: 'Nudge right', scope: 'Edit', action: () => { nudgeClips(selection, 10, 0); } },
+    { key: 'shift+arrowup', label: 'Nudge up', scope: 'Edit', action: () => { nudgeClips(selection, 0, -10); } },
+    { key: 'shift+arrowdown', label: 'Nudge down', scope: 'Edit', action: () => { nudgeClips(selection, 0, 10); } },
   ], [
-    togglePlay, goToStart, goToEnd, stepFrame, setToolMode, selectedClipId,
+    togglePlay, goToStart, goToEnd, stepFrame, setToolMode, selectedClipId, selection,
     selectedKeyframe, deleteClip, removeKeyframeAt, undo, redo, duplicateClip,
-    splitClip, copyClip, pasteClip, saveProjectFile, showToast, nudgeClip,
+    splitClip, copyClip, pasteClip, saveProjectFile, showToast, nudgeClip, nudgeClips,
     jumpKeyframe, toggleExpanded, trimClipEdge, setWorkArea, currentTime, comp,
   ]);
 
@@ -197,7 +198,10 @@ export default function EditorLayout() {
         {selectedClipId && (
           <>
             <div className="w-px h-5 bg-surface-600 shrink-0" />
-            <AlignBar compact onAlign={align => alignClipToComp(selectedClipId, align)} />
+            <AlignBar compact onAlign={align => alignClips(selection, align)} />
+            {selection.length > 1 && (
+              <span className="text-[10px] text-slate-400 whitespace-nowrap shrink-0" title="Shift-click adds or removes a layer">{selection.length} selected</span>
+            )}
           </>
         )}
 

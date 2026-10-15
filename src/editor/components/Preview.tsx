@@ -21,9 +21,9 @@ const DRAG_THRESHOLD = 4;
 export default function Preview() {
   const {
     state, selectClip, addClip, updateClipProperty, setToolMode, setActiveComposition,
-    setTransformValues, setShowGrid,
+    setTransformValues, setTransformValuesMany, setShowGrid,
   } = useEditor();
-  const { currentTime, isPlaying, project, toolMode, selectedClipId, showGrid } = state;
+  const { currentTime, isPlaying, project, toolMode, selectedClipId, selectedClipIds, showGrid } = state;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -130,9 +130,10 @@ export default function Preview() {
       showGrid,
       showSafeZones: true,
       selectedClipId: toolMode === 'pen' ? null : selectedClipId,
+      selectedClipIds: toolMode === 'pen' ? [] : selectedClipIds,
       hideClipId: editingClipId,
     });
-  }, [currentTime, isPlaying, comp, project, showGrid, selectedClipId, toolMode, meshTick, editingClipId]);
+  }, [currentTime, isPlaying, comp, project, showGrid, selectedClipId, selectedClipIds, toolMode, meshTick, editingClipId]);
 
   const canvasToComp = useCallback((e: { clientX: number; clientY: number }) => {
     const canvas = canvasRef.current;
@@ -162,6 +163,16 @@ export default function Preview() {
     if (pointInSelection(px, py, box)) return 'move';
     return null;
   }, [selectionFor, previewScale]);
+
+  // Every clip a canvas drag moves, with where each started.
+  const groupRef = useRef<{ id: string; origX: number; origY: number }[]>([]);
+  const groupFor = useCallback((ids: string[]) => ids
+    .map(id => findClip(comp, id))
+    .filter((c): c is Clip => !!c)
+    .map(c => {
+      const ct = currentTime - c.start;
+      return { id: c.id, origX: evalProp(c.transform.x, ct), origY: evalProp(c.transform.y, ct) };
+    }), [comp, currentTime]);
 
   const hitTest = useCallback((clickX: number, clickY: number): Clip | null => {
     const t = currentTime;
@@ -219,6 +230,8 @@ export default function Preview() {
       if (selected) {
         const handle = handleAt(clickX, clickY, selected);
         if (handle) {
+          if (e.shiftKey && handle === 'move') { selectClip(selected.id, true); return; }
+          groupRef.current = groupFor(handle === 'move' && selectedClipIds.length > 1 ? selectedClipIds : [selected.id]);
           const t = currentTime - selected.start;
           const box = selectionFor(selected);
           dragRef.current = {
@@ -243,7 +256,10 @@ export default function Preview() {
 
     const hit = hitTest(clickX, clickY);
     if (hit) {
-      selectClip(hit.id);
+      if (e.shiftKey) { selectClip(hit.id, true); return; }
+      const inGroup = selectedClipIds.length > 1 && selectedClipIds.includes(hit.id);
+      if (!inGroup) selectClip(hit.id);
+      groupRef.current = groupFor(inGroup ? selectedClipIds : [hit.id]);
       const t = currentTime - hit.start;
       const box = selectionFor(hit);
       dragRef.current = {
@@ -261,10 +277,10 @@ export default function Preview() {
         startDist: Math.max(8, Math.hypot(clickX - box.cx, clickY - box.cy)),
         started: false,
       };
-    } else {
+    } else if (!e.shiftKey) {
       selectClip(null);
     }
-  }, [toolMode, canvasToComp, comp, currentTime, addClip, selectClip, setToolMode, hitTest, selectedClipId, handleAt, selectionFor]);
+  }, [toolMode, canvasToComp, comp, currentTime, addClip, selectClip, setToolMode, hitTest, selectedClipId, selectedClipIds, handleAt, selectionFor, groupFor]);
 
   const handleDoubleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (toolMode !== 'pointer') return;
@@ -300,10 +316,15 @@ export default function Preview() {
           if (Math.abs(dx) > Math.abs(dy)) my = 0;
           else mx = 0;
         }
-        setTransformValues(drag.clipId, {
-          x: drag.origX + mx,
-          y: drag.origY + my,
-        });
+        const group = groupRef.current;
+        if (group.length > 1) {
+          setTransformValuesMany(group.map(g => ({ clipId: g.id, values: { x: g.origX + mx, y: g.origY + my } })));
+        } else {
+          setTransformValues(drag.clipId, {
+            x: drag.origX + mx,
+            y: drag.origY + my,
+          });
+        }
         return;
       }
 
@@ -335,7 +356,7 @@ export default function Preview() {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [canvasToComp, setTransformValues]);
+  }, [canvasToComp, setTransformValues, setTransformValuesMany]);
 
   const onCanvasMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (toolMode !== 'pointer' || dragRef.current) return;
