@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Composition, Project } from '../types';
-import { exportToWebM, exportToGIF, downloadBlob } from '../export';
+import { exportToWebM, exportToGIF, downloadBlob, formatBytes } from '../export';
 import { mediaCacheMap } from '../mediaCache';
 import type { ExportFormat, ExportSettings, ExportProgress } from '../export';
+import { useEditor } from '../EditorContext';
 import { X, Film, Image as ImageIcon, Download, Loader2 } from 'lucide-react';
 
 interface ExportDialogProps {
@@ -13,12 +14,13 @@ interface ExportDialogProps {
 }
 
 export default function ExportDialog({ open, onClose, comp, project }: ExportDialogProps) {
+  const { pause } = useEditor();
   const [format, setFormat] = useState<ExportFormat>('webm');
   const [quality, setQuality] = useState<'low' | 'medium' | 'high'>('medium');
   const [useWorkArea, setUseWorkArea] = useState(true);
   const [progress, setProgress] = useState<ExportProgress>({ frame: 0, totalFrames: 0, time: 0, status: 'idle' });
   const [blob, setBlob] = useState<Blob | null>(null);
-  const abortRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
   const assetCache = useRef<Map<string, HTMLImageElement | HTMLVideoElement>>(new Map());
 
   useEffect(() => {
@@ -26,16 +28,24 @@ export default function ExportDialog({ open, onClose, comp, project }: ExportDia
     assetCache.current = mediaCacheMap(project.assets);
   }, [open, project.assets]);
 
-  const rangeStart = useWorkArea ? (comp.workAreaStart ?? 0) : 0;
-  const rangeEnd = useWorkArea ? (comp.workAreaEnd ?? comp.duration) : comp.duration;
-  const exportFps = format === 'gif' ? Math.min(comp.fps, 15) : comp.fps;
+  useEffect(() => {
+    setBlob(null);
+    setProgress({ frame: 0, totalFrames: 0, time: 0, status: 'idle' });
+  }, [format]);
+
+  const rangeStart = Math.max(0, useWorkArea ? (comp.workAreaStart ?? 0) : 0);
+  const rangeEnd = Math.min(comp.duration, Math.max(rangeStart + 1 / Math.max(comp.fps, 1), useWorkArea ? (comp.workAreaEnd ?? comp.duration) : comp.duration));
+  const exportFps = format === 'gif' ? Math.min(comp.fps, 12) : comp.fps;
   const totalFrames = Math.max(1, Math.ceil((rangeEnd - rangeStart) * exportFps));
-  const gifScale = Math.min(1, 540 / Math.max(comp.width, comp.height));
+  const gifScale = Math.min(1, 480 / Math.max(comp.width, comp.height));
   const outW = format === 'gif' ? Math.round(comp.width * gifScale) : comp.width;
   const outH = format === 'gif' ? Math.round(comp.height * gifScale) : comp.height;
 
   const handleExport = useCallback(async () => {
-    abortRef.current = false;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    pause();
     setBlob(null);
     setProgress({ frame: 0, totalFrames, time: rangeStart, status: 'rendering' });
 
@@ -44,44 +54,43 @@ export default function ExportDialog({ open, onClose, comp, project }: ExportDia
       quality,
       startTime: rangeStart,
       endTime: rangeEnd,
+      signal: ac.signal,
     };
 
     try {
-      let result: Blob;
-      if (format === 'webm') {
-        result = await exportToWebM(comp, project, assetCache.current, settings, (p) => {
-          if (!abortRef.current) setProgress(p);
+      const result = format === 'webm'
+        ? await exportToWebM(comp, project, assetCache.current, settings, p => {
+          if (!ac.signal.aborted) setProgress(p);
+        })
+        : await exportToGIF(comp, project, assetCache.current, settings, p => {
+          if (!ac.signal.aborted) setProgress(p);
         });
-      } else {
-        result = await exportToGIF(comp, project, assetCache.current, settings, (p) => {
-          if (!abortRef.current) setProgress(p);
-        });
-      }
 
-      if (!abortRef.current) {
-        setBlob(result);
-        setProgress(p => ({ ...p, status: 'done' }));
-      }
+      if (ac.signal.aborted) return;
+      setBlob(result);
+      setProgress(p => ({ ...p, status: 'done' }));
+      const ext = format === 'webm' ? 'webm' : 'gif';
+      downloadBlob(result, `${comp.name.replace(/\s+/g, '_')}_${outW}x${outH}.${ext}`);
     } catch (err) {
-      if (!abortRef.current) {
-        setProgress({
-          frame: 0, totalFrames: 0, time: 0,
-          status: 'error',
-          error: err instanceof Error ? err.message : 'Export failed',
-        });
-      }
+      if (ac.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) return;
+      setProgress({
+        frame: 0, totalFrames: 0, time: 0,
+        status: 'error',
+        error: err instanceof Error ? err.message : 'Export failed',
+      });
     }
-  }, [format, quality, comp, project, totalFrames, rangeStart, rangeEnd]);
+  }, [format, quality, comp, project, totalFrames, rangeStart, rangeEnd, pause, outW, outH]);
 
   const handleDownload = useCallback(() => {
     if (!blob) return;
     const ext = format === 'webm' ? 'webm' : 'gif';
-    const filename = `${comp.name.replace(/\s+/g, '_')}_${comp.width}x${comp.height}.${ext}`;
+    const filename = `${comp.name.replace(/\s+/g, '_')}_${outW}x${outH}.${ext}`;
     downloadBlob(blob, filename);
-  }, [blob, format, comp.name, comp.width, comp.height]);
+  }, [blob, format, comp.name, outW, outH]);
 
   const handleCancel = useCallback(() => {
-    abortRef.current = true;
+    abortRef.current?.abort();
+    abortRef.current = null;
     setProgress({ frame: 0, totalFrames: 0, time: 0, status: 'idle' });
     setBlob(null);
     onClose();
@@ -208,7 +217,7 @@ export default function ExportDialog({ open, onClose, comp, project }: ExportDia
 
           {progress.status === 'done' && blob && (
             <div className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2 flex items-center gap-2">
-              <span>Export complete — {format === 'webm' ? 'WebM' : 'GIF'} ready</span>
+              <span>Export complete — {format === 'webm' ? 'WebM' : 'GIF'} ({formatBytes(blob.size)})</span>
             </div>
           )}
         </div>

@@ -147,13 +147,19 @@ export async function analyzeAudioAsset(asset: Asset): Promise<{ duration: numbe
   return { duration: buffer.duration, peaks: peaksFromBuffer(buffer) };
 }
 
+export interface ExportAudioMix {
+  track: MediaStreamTrack;
+  start: () => void;
+  stop: () => void;
+}
+
 /** Mix audible clips into a MediaStream track for WebM export. */
 export async function createExportAudioTrack(
   comp: Composition,
   project: Project,
   startTime: number,
   endTime: number
-): Promise<MediaStreamTrack | null> {
+): Promise<ExportAudioMix | null> {
   const jobs: { clip: Clip; track: Track; rootStart: number; rootEnd: number }[] = [];
 
   const collect = (
@@ -202,28 +208,41 @@ export async function createExportAudioTrack(
   const ctx = audioContext();
   if (ctx.state === 'suspended') await ctx.resume();
   const dest = ctx.createMediaStreamDestination();
-  const t0 = ctx.currentTime + 0.05;
+  const sources: AudioBufferSourceNode[] = [];
 
-  for (const { clip, track, buffer, rootStart, rootEnd } of resolved) {
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    const gain = ctx.createGain();
-    const level = clipGain(clip, track, clip.start);
-    gain.gain.value = level;
-    source.connect(gain);
-    gain.connect(dest);
+  const start = () => {
+    const t0 = ctx.currentTime + 0.08;
+    for (const { clip, track, buffer, rootStart, rootEnd } of resolved) {
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      const gain = ctx.createGain();
+      const level = clipGain(clip, track, clip.start);
+      gain.gain.value = level;
+      source.connect(gain);
+      gain.connect(dest);
 
-    const clipStart = Math.max(rootStart, startTime);
-    const clipEnd = Math.min(rootEnd, endTime);
-    const when = t0 + (clipStart - startTime);
-    const offset = clip.sourceStart + (clipStart - rootStart);
-    const dur = Math.max(0.01, clipEnd - clipStart);
-    try {
-      source.start(when, Math.max(0, offset), dur);
-    } catch {
-      // invalid offset
+      const clipStart = Math.max(rootStart, startTime);
+      const clipEnd = Math.min(rootEnd, endTime);
+      const when = t0 + (clipStart - startTime);
+      const offset = clip.sourceStart + (clipStart - rootStart);
+      const dur = Math.max(0.01, clipEnd - clipStart);
+      try {
+        source.start(when, Math.max(0, offset), dur);
+        sources.push(source);
+      } catch {
+        // invalid offset
+      }
     }
-  }
+  };
 
-  return dest.stream.getAudioTracks()[0] ?? null;
+  const stop = () => {
+    for (const source of sources) {
+      try { source.stop(); } catch { /* already stopped */ }
+    }
+    dest.stream.getTracks().forEach(t => t.stop());
+  };
+
+  const track = dest.stream.getAudioTracks()[0];
+  if (!track) return null;
+  return { track, start, stop };
 }
