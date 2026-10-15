@@ -76,7 +76,14 @@ export function hydrateAnimatedProperty(prop: AnimatedProperty): AnimatedPropert
   // Saved projects can carry a value or time that is a string or missing (an
   // input box once wrote strings; older saves lack fields). Coerce to finite
   // numbers so nothing downstream calls a number method on a string.
-  const keyframes = (prop.keyframes || [])
+  let raw = prop.keyframes || [];
+  // A project written outside the editor can nest the whole keyframe list
+  // inside a single keyframe's value; unwrap it rather than reading it as 0.
+  const nested = raw.length === 1 ? (raw[0] as { value?: unknown }).value : undefined;
+  if (Array.isArray(nested) && nested.length && nested.every(k => k && typeof k === 'object' && 'time' in (k as object))) {
+    raw = nested as Keyframe[];
+  }
+  const keyframes = raw
     .map(k => ({ ...k, id: k.id || newKeyframeId(), time: toNum(k.time, 0), value: toNum(k.value, 0) }))
     .filter(k => Number.isFinite(k.time));
   return {
