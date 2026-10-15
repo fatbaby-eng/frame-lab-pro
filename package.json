@@ -1,11 +1,13 @@
 {
   "name": "frame-lab-pro-v2",
   "private": true,
+  "license": "AGPL-3.0-only",
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:site": "tsc -b && FL_BASE=/framelab/ vite build --outDir dist-site && node scripts/site-beacon.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },

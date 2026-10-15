@@ -106,6 +106,11 @@ interface EditorContextType {
   updateComposition: (patch: Partial<Composition>) => void;
   renameComposition: (id: string, name: string) => void;
   newProject: () => void;
+  /** Replace the whole project with a ready-made one (a template, or the start screen's blank comp). */
+  loadProject: (project: Project) => void;
+  /** Start over with a single composition — the start screen's "blank" door. */
+  newProjectWith: (comp: Composition, name?: string) => void;
+  hasAutosave: () => boolean;
   saveProjectFile: () => Promise<void>;
   loadProjectFile: (file: File) => Promise<void>;
   // History
@@ -1309,6 +1314,38 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     URL.revokeObjectURL(url);
   }, [state.project]);
 
+  const loadProject = useCallback((project: Project) => {
+    const parsed = hydrateLoadedProject(cloneProject(project));
+    if (!parsed) throw new Error('Invalid project');
+    historyRef.current = [];
+    futureRef.current = [];
+    setState(s => ({
+      ...s,
+      project: parsed,
+      currentTime: 0,
+      isPlaying: false,
+      selectedClipId: null,
+      selectedTrackId: null,
+      canUndo: false,
+      canRedo: false,
+    }));
+  }, []);
+
+  const newProjectWith = useCallback((comp: Composition, name?: string) => {
+    localStorage.removeItem(AUTOSAVE_KEY);
+    loadProject({
+      id: `project-${Date.now()}`,
+      name: name ?? 'Untitled Project',
+      compositions: [comp],
+      activeCompositionId: comp.id,
+      assets: [],
+    });
+  }, [loadProject]);
+
+  const hasAutosave = useCallback(() => {
+    try { return !!localStorage.getItem(AUTOSAVE_KEY); } catch { return false; }
+  }, []);
+
   const loadProjectFile = useCallback(async (file: File) => {
     const text = await file.text();
     const parsed = hydrateLoadedProject(JSON.parse(text) as Project);
@@ -1380,7 +1417,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     addAsset, updateAsset, deleteAsset,
     setProjectName, setCompositionDuration, updateComposition, renameComposition,
     setActiveComposition, addComposition, duplicateComposition, deleteComposition, addCompositionAsLayer,
-    newProject, saveProjectFile, loadProjectFile,
+    newProject, loadProject, newProjectWith, hasAutosave, saveProjectFile, loadProjectFile,
     undo, redo,
     getActiveComposition,
     showToast, clearToast,

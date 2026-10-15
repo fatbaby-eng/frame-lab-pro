@@ -1,17 +1,39 @@
 <!doctype html>
+<!--
+  Frame Lab — Copyright (c) 2026 Todd Boswell, toddboswell.com
+  Free software under the GNU AGPL v3 (see LICENSE). Keep this notice and
+  the author credit intact in copies and modified versions (AGPL §5, §7(b)).
+-->
+
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="./logo.png" />
     <link rel="apple-touch-icon" href="./logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Frame Lab Pro</title>
+<script>
+/* Start-screen veil: paint the vibe colour before anything else renders, so
+   the editor never flashes under the start screen. bench-splash.js lifts it
+   (BenchSplash.lift) once the start screen is up or skipped; a timer lifts it
+   regardless, so a script error can never leave the page blank. */
+(function (def) {
+  var V = { darkroom: '#0a0a0a', midwest: '#f5f2ed', brutalist: '#ffffff', retrowave: '#0f0518' };
+  var v = def; try { var s = localStorage.getItem('todd-vibe'); if (s && V[s]) v = s; } catch (e) {}
+  var st = document.createElement('style'); st.id = 'bench-veil-style';
+  st.textContent = 'html.bench-veil{background:' + V[v] + '!important}html.bench-veil body{background:' + V[v] + '!important}html.bench-veil body>*:not(.bench-splash):not(.bench-help){visibility:hidden!important}';
+  document.head.appendChild(st);
+  document.documentElement.classList.add('bench-veil');
+  setTimeout(function () { document.documentElement.classList.remove('bench-veil'); }, 4000);
+})('darkroom');
+</script>
+    <title>Frame Lab</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="root"></div>
+    <script src="./bench-splash.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -8,11 +8,12 @@ import AssetPanel from './components/AssetPanel';
 import ExportDialog from './components/ExportDialog';
 import AlignBar from './components/AlignBar';
 import KeyboardShortcutsModal from '../components/KeyboardShortcutsModal';
+import HelpMenu from '../splash/HelpMenu';
 import { useKeyboardShortcuts, type Shortcut } from '../hooks/useKeyboardShortcuts';
 import {
   Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight,
   Save, FolderOpen, Film, MousePointer2, PenTool, Type, Square,
-  Undo2, Redo2, FilePlus, Repeat, HelpCircle, Plus, X,
+  Undo2, Redo2, FilePlus, Repeat, Plus, X,
 } from 'lucide-react';
 
 export default function EditorLayout() {
@@ -110,6 +111,9 @@ export default function EditorLayout() {
   };
 
   const handleNew = () => {
+    // The start screen owns "new": templates, blank sizes, open. It keeps the
+    // current project until a door is chosen.
+    if (window.BenchSplash) { window.dispatchEvent(new Event('framelab:start')); return; }
     if (confirm('Start a new project? Unsaved changes will be lost.')) {
       newProject();
       showToast('New project');
@@ -123,7 +127,7 @@ export default function EditorLayout() {
           <img
             src={`${import.meta.env.BASE_URL}logo.png`}
             alt="Frame Lab"
-            title="Frame Lab Pro"
+            title="Mr. Todd's Frame Lab"
             className="w-7 h-7 rounded-md object-contain bg-black shrink-0"
           />
           <input
@@ -136,7 +140,7 @@ export default function EditorLayout() {
 
         <div className="w-px h-5 bg-surface-600 shrink-0" />
 
-        <button onClick={handleNew} className="shrink-0 flex items-center gap-1.5 px-2 py-1 rounded hover:bg-surface-700 text-xs text-slate-300" title="New project">
+        <button onClick={handleNew} className="shrink-0 flex items-center gap-1.5 px-2 py-1 rounded hover:bg-surface-700 text-xs text-slate-300" title="Start screen — new, template, or open">
           <FilePlus size={13} />
         </button>
         <button
@@ -249,9 +253,7 @@ export default function EditorLayout() {
         </div>
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
-          <button onClick={() => setShowHelp(true)} className="text-slate-500 hover:text-white" title="Shortcuts (?)">
-            <HelpCircle size={14} />
-          </button>
+          <HelpMenu onShortcuts={() => setShowHelp(true)} />
           <span className="text-[10px] text-slate-500">{comp.width}×{comp.height} @ {comp.fps}fps</span>
           <button onClick={() => setExportOpen(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent hover:bg-accent-dark text-white text-xs font-medium transition-colors">
             <Film size={13} />

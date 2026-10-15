@@ -1,0 +1,28 @@
+Frame Lab
+Copyright (c) 2026 Todd Boswell — toddboswell.com
+
+Made by Todd Boswell in Omaha, Nebraska. Part of the bench at
+https://toddboswell.com.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, version 3 of the License only.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero
+General Public License (the LICENSE file) for details.
+
+Attribution
+-----------
+This notice, the copyright line, and the "Made by Todd Boswell" credit
+in the application's About panel are part of the work. Under sections 5
+and 7(b) of the AGPL they must stay intact in every copy and every
+modified version, including versions served over a network. Renaming the
+program is fine; removing the author's name is not.
+
+The "Mr. Todd's" name and the kewpie mark identify Todd Boswell's own
+builds. Forks and modified versions should carry their own name and mark
+and say they are derived from this program.
+
+Covered files: index.html, src/**, public/**, scripts/**
