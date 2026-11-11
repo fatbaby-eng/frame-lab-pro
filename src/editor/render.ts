@@ -1,6 +1,6 @@
 import {
   evalTransform, drawPath, getPathPosition, getPathTangent, findClip, nestedCompTime,
-  hydrateTextStyle,
+  hydrateTextStyle, evalExtra, hasReveal,
 } from './types';
 import type { Clip, Composition, Project, Asset, WorldTransform, LayerEffect, CompAlign, TextStyle } from './types';
 import { renderMeshLayer, MESH_SPRITE } from './mesh3d';
@@ -310,6 +310,8 @@ export function clipLocalSize(
   clip: Clip,
   getAsset?: (id: string) => Asset | undefined,
   project?: Project,
+  /** Seconds into the clip; animated shape sizes are read here. */
+  clipTime = 0,
 ): { w: number; h: number } {
   switch (clip.type) {
     case 'text': {
@@ -317,7 +319,7 @@ export function clipLocalSize(
       return { w: layout.width, h: layout.height };
     }
     case 'shape':
-      return { w: 100, h: 100 };
+      return { w: Math.abs(evalExtra(clip, 'shapeW', clipTime)), h: Math.abs(evalExtra(clip, 'shapeH', clipTime)) };
     case 'mesh3d':
       return { w: MESH_SPRITE, h: MESH_SPRITE };
     case 'comp': {
@@ -356,7 +358,7 @@ export function getSelectionBox(
   project?: Project,
 ): SelectionBox {
   const xf = resolveClipTransform(clip, time, cw, ch, comp);
-  const { w: lw, h: lh } = clipLocalSize(clip, getAsset, project);
+  const { w: lw, h: lh } = clipLocalSize(clip, getAsset, project, time - clip.start);
   const w = Math.max(24, lw * Math.abs(xf.scaleX));
   const h = Math.max(24, lh * Math.abs(xf.scaleY));
   let cx = cw / 2 + xf.x;
@@ -423,6 +425,216 @@ function applyEffects(ctx: CanvasRenderingContext2D, effects?: LayerEffect[]) {
   ctx.filter = parts.join(' ') || 'none';
 }
 
+// ---------- Shapes ----------
+
+const pathCache = new Map<string, Path2D>();
+const pathBoxCache = new Map<string, [number, number, number, number]>();
+
+function cachedPath(d: string): Path2D {
+  let p = pathCache.get(d);
+  if (!p) {
+    p = new Path2D(d);
+    if (pathCache.size > 500) pathCache.clear();
+    pathCache.set(d, p);
+  }
+  return p;
+}
+
+/** Bounds of SVG path data, measured once by the browser. */
+export function measurePathBox(d: string): [number, number, number, number] | null {
+  const cached = pathBoxCache.get(d);
+  if (cached) return cached;
+  if (typeof document === 'undefined' || !d.trim()) return null;
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', '0');
+  svg.setAttribute('height', '0');
+  svg.style.position = 'absolute';
+  svg.style.visibility = 'hidden';
+  const el = document.createElementNS(ns, 'path');
+  el.setAttribute('d', d);
+  svg.appendChild(el);
+  document.body.appendChild(svg);
+  let box: [number, number, number, number] | null = null;
+  try {
+    const b = el.getBBox();
+    if (b.width > 0 || b.height > 0) box = [b.x, b.y, b.width, b.height];
+  } catch {
+    box = null;
+  }
+  svg.remove();
+  if (box) pathBoxCache.set(d, box);
+  return box;
+}
+
+const SPARKLE = 'M0,-50 Q10,-10 50,0 Q10,10 0,50 Q-10,10 -50,0 Q-10,-10 0,-50 Z';
+
+/** Outline of a shape layer at the given size, centred on the layer origin. */
+export function shapeOutline(clip: Clip, w: number, h: number): Path2D {
+  const p = new Path2D();
+  const hw = w / 2;
+  const hh = h / 2;
+  switch (clip.shapeType) {
+    case 'circle':
+      p.ellipse(0, 0, Math.abs(hw), Math.abs(hh), 0, 0, Math.PI * 2);
+      break;
+    case 'triangle':
+      p.moveTo(0, -hh);
+      p.lineTo(hw, hh);
+      p.lineTo(-hw, hh);
+      p.closePath();
+      break;
+    case 'star':
+      for (let i = 0; i < 10; i++) {
+        const r = i % 2 === 0 ? 1 : 0.5;
+        const angle = (i * Math.PI) / 5 - Math.PI / 2;
+        const x = Math.cos(angle) * hw * r;
+        const y = Math.sin(angle) * hh * r;
+        if (i === 0) p.moveTo(x, y);
+        else p.lineTo(x, y);
+      }
+      p.closePath();
+      break;
+    case 'sparkle':
+      p.addPath(cachedPath(SPARKLE), new DOMMatrix([w / 100, 0, 0, h / 100, 0, 0]));
+      break;
+    case 'path': {
+      const d = clip.shapePath || '';
+      const box = clip.shapePathBox ?? measurePathBox(d);
+      if (!d || !box) break;
+      const sx = box[2] ? w / box[2] : 1;
+      const sy = box[3] ? h / box[3] : 1;
+      const tx = -(box[0] + box[2] / 2) * sx;
+      const ty = -(box[1] + box[3] / 2) * sy;
+      p.addPath(cachedPath(d), new DOMMatrix([sx, 0, 0, sy, tx, ty]));
+      break;
+    }
+    case 'rect':
+    default:
+      p.rect(-hw, -hh, w, h);
+  }
+  return p;
+}
+
+function drawShape(c: CanvasRenderingContext2D, clip: Clip, clipTime: number) {
+  const w = evalExtra(clip, 'shapeW', clipTime);
+  const h = evalExtra(clip, 'shapeH', clipTime);
+  const strokeW = Math.max(0, evalExtra(clip, 'shapeStrokeW', clipTime));
+  const outline = shapeOutline(clip, w, h);
+  const fill = clip.shapeColor || '#6366f1';
+  if (fill !== 'none' && fill !== 'transparent') {
+    c.fillStyle = fill;
+    c.fill(outline);
+  }
+  if (strokeW > 0) {
+    c.strokeStyle = clip.shapeStrokeColor || '#ffffff';
+    c.lineWidth = strokeW;
+    c.lineJoin = clip.shapeRound ? 'round' : 'miter';
+    c.lineCap = clip.shapeRound ? 'round' : 'butt';
+    c.stroke(outline);
+  }
+}
+
+// ---------- Reveal (linear wipe) ----------
+
+interface RevealGeometry {
+  /** Content-box centre in the layer's drawing space. */
+  cx: number;
+  cy: number;
+  /** Unit direction the reveal travels. */
+  dx: number;
+  dy: number;
+  /** Edge position along the direction, measured from the centre. */
+  edge: number;
+  feather: number;
+  reach: number;
+  hidden: boolean;
+  full: boolean;
+}
+
+function revealGeometry(
+  clip: Clip,
+  clipTime: number,
+  getAsset: (id: string) => Asset | undefined,
+  project: Project,
+): RevealGeometry {
+  const progress = Math.max(0, Math.min(100, evalExtra(clip, 'revealProgress', clipTime))) / 100;
+  const angle = (evalExtra(clip, 'revealAngle', clipTime) * Math.PI) / 180;
+  const feather = Math.max(0, evalExtra(clip, 'revealFeather', clipTime));
+  const { w, h } = clipLocalSize(clip, getAsset, project, clipTime);
+  let cx = 0;
+  let cy = 0;
+  if (clip.type === 'text') {
+    const off = textBlockOffset(hydrateTextStyle(clip.textStyle), h);
+    cx = off.ox;
+    cy = off.oy;
+  }
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
+  // Half the box's extent along the direction; the edge travels from one side to the other.
+  const e = Math.abs((w / 2) * dx) + Math.abs((h / 2) * dy);
+  const edge = -e - feather / 2 + (2 * e + feather) * progress;
+  return {
+    cx, cy, dx, dy, edge, feather,
+    reach: 2 * (e + feather) + Math.max(w, h) + 64,
+    hidden: progress <= 0,
+    full: progress >= 1,
+  };
+}
+
+function clipToReveal(c: CanvasRenderingContext2D, r: RevealGeometry) {
+  const big = r.reach;
+  // Corners of the visible half-plane, in drawing space.
+  const px = -r.dy;
+  const py = r.dx;
+  const ex = r.cx + r.dx * r.edge;
+  const ey = r.cy + r.dy * r.edge;
+  const bx = r.cx - r.dx * big;
+  const by = r.cy - r.dy * big;
+  c.beginPath();
+  c.moveTo(ex + px * big, ey + py * big);
+  c.lineTo(ex - px * big, ey - py * big);
+  c.lineTo(bx - px * big, by - py * big);
+  c.lineTo(bx + px * big, by + py * big);
+  c.closePath();
+  c.clip();
+}
+
+function maskFeather(c: CanvasRenderingContext2D, r: RevealGeometry) {
+  const a = r.edge - r.feather / 2;
+  const b = r.edge + r.feather / 2;
+  const g = c.createLinearGradient(r.cx + r.dx * a, r.cy + r.dy * a, r.cx + r.dx * b, r.cy + r.dy * b);
+  g.addColorStop(0, 'rgba(0,0,0,1)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  c.save();
+  c.globalCompositeOperation = 'destination-in';
+  c.globalAlpha = 1;
+  c.filter = 'none';
+  c.fillStyle = g;
+  const big = r.reach;
+  c.fillRect(r.cx - big, r.cy - big, big * 2, big * 2);
+  c.restore();
+}
+
+const scratchPool: { canvas: HTMLCanvasElement; busy: boolean }[] = [];
+
+function acquireScratch(width: number, height: number): HTMLCanvasElement {
+  let slot = scratchPool.find(s => !s.busy);
+  if (!slot) {
+    slot = { canvas: document.createElement('canvas'), busy: false };
+    scratchPool.push(slot);
+  }
+  slot.busy = true;
+  if (slot.canvas.width !== width) slot.canvas.width = width;
+  if (slot.canvas.height !== height) slot.canvas.height = height;
+  return slot.canvas;
+}
+
+function releaseScratch(canvas: HTMLCanvasElement) {
+  const slot = scratchPool.find(s => s.canvas === canvas);
+  if (slot) slot.busy = false;
+}
+
 function renderClip(
   ctx: CanvasRenderingContext2D,
   clip: Clip,
@@ -437,6 +649,11 @@ function renderClip(
   hideClipId?: string | null,
 ) {
   const xf = resolveClipTransform(clip, currentTime, cw, ch, comp);
+  const clipTime = currentTime - clip.start;
+  const reveal = hasReveal(clip) && clip.type !== 'path' && clip.type !== 'audio'
+    ? revealGeometry(clip, clipTime, getAsset, project)
+    : null;
+  if (reveal && reveal.hidden) return;
 
   ctx.save();
   ctx.globalAlpha = xf.opacity;
@@ -446,6 +663,49 @@ function renderClip(
   ctx.scale(xf.scaleX, xf.scaleY);
   ctx.translate(-xf.anchorX, -xf.anchorY);
 
+  // A feathered reveal needs the layer on its own canvas so the soft edge can be masked.
+  let target: CanvasRenderingContext2D = ctx;
+  let scratch: HTMLCanvasElement | null = null;
+  if (reveal && !reveal.full) {
+    if (reveal.feather > 0.01) {
+      scratch = acquireScratch(ctx.canvas.width, ctx.canvas.height);
+      const sctx = scratch.getContext('2d')!;
+      sctx.setTransform(1, 0, 0, 1, 0, 0);
+      sctx.clearRect(0, 0, scratch.width, scratch.height);
+      sctx.setTransform(ctx.getTransform());
+      sctx.globalAlpha = 1;
+      sctx.filter = ctx.filter;
+      target = sctx;
+    } else {
+      clipToReveal(ctx, reveal);
+    }
+  }
+  paintClip(target, clip, currentTime, cw, ch, project, assetCache, getAsset, visitedComps, hideClipId, xf);
+  if (scratch && reveal) {
+    maskFeather(target, reveal);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.filter = 'none';
+    ctx.globalAlpha = xf.opacity;
+    ctx.drawImage(scratch, 0, 0);
+    releaseScratch(scratch);
+  }
+
+  ctx.restore();
+}
+
+function paintClip(
+  c: CanvasRenderingContext2D,
+  clip: Clip,
+  currentTime: number,
+  cw: number,
+  ch: number,
+  project: Project,
+  assetCache: Map<string, HTMLImageElement | HTMLVideoElement>,
+  getAsset: (id: string) => Asset | undefined,
+  visitedComps: Set<string>,
+  hideClipId: string | null | undefined,
+  xf: WorldTransform,
+) {
   switch (clip.type) {
     case 'video': {
       if (clip.assetId) {
@@ -454,7 +714,7 @@ function renderClip(
           const asset = getAsset(clip.assetId);
           const w = asset?.width || video.videoWidth || cw;
           const h = asset?.height || video.videoHeight || ch;
-          ctx.drawImage(video, -w / 2, -h / 2, w, h);
+          c.drawImage(video, -w / 2, -h / 2, w, h);
         }
       }
       break;
@@ -466,7 +726,7 @@ function renderClip(
           const asset = getAsset(clip.assetId);
           const w = asset?.width || img.naturalWidth || 400;
           const h = asset?.height || img.naturalHeight || 300;
-          ctx.drawImage(img, -w / 2, -h / 2, w, h);
+          c.drawImage(img, -w / 2, -h / 2, w, h);
         }
       }
       break;
@@ -474,57 +734,18 @@ function renderClip(
     case 'text': {
       if (hideClipId && clip.id === hideClipId) break;
       if (clip.textContent != null && clip.textStyle) {
-        drawTextBlock(ctx, clip.textContent, clip.textStyle);
+        drawTextBlock(c, clip.textContent, clip.textStyle);
       }
       break;
     }
     case 'shape': {
-      const shapeColor = clip.shapeColor || '#6366f1';
-      const strokeWidth = clip.shapeStroke || 0;
-      const size = 100;
-      ctx.fillStyle = shapeColor;
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = strokeWidth;
-      switch (clip.shapeType) {
-        case 'rect':
-          ctx.fillRect(-size / 2, -size / 2, size, size);
-          if (strokeWidth > 0) ctx.strokeRect(-size / 2, -size / 2, size, size);
-          break;
-        case 'circle':
-          ctx.beginPath();
-          ctx.arc(0, 0, size / 2, 0, Math.PI * 2);
-          ctx.fill();
-          if (strokeWidth > 0) ctx.stroke();
-          break;
-        case 'triangle':
-          ctx.beginPath();
-          ctx.moveTo(0, -size / 2);
-          ctx.lineTo(size / 2, size / 2);
-          ctx.lineTo(-size / 2, size / 2);
-          ctx.closePath();
-          ctx.fill();
-          if (strokeWidth > 0) ctx.stroke();
-          break;
-        case 'star': {
-          ctx.beginPath();
-          for (let i = 0; i < 10; i++) {
-            const r = i % 2 === 0 ? size / 2 : size / 4;
-            const angle = (i * Math.PI) / 5 - Math.PI / 2;
-            if (i === 0) ctx.moveTo(Math.cos(angle) * r, Math.sin(angle) * r);
-            else ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r);
-          }
-          ctx.closePath();
-          ctx.fill();
-          if (strokeWidth > 0) ctx.stroke();
-          break;
-        }
-      }
+      drawShape(c, clip, currentTime - clip.start);
       break;
     }
     case 'mesh3d': {
       const sprite = renderMeshLayer(clip, currentTime - clip.start, getAsset);
       if (sprite) {
-        ctx.drawImage(sprite, -MESH_SPRITE / 2, -MESH_SPRITE / 2, MESH_SPRITE, MESH_SPRITE);
+        c.drawImage(sprite, -MESH_SPRITE / 2, -MESH_SPRITE / 2, MESH_SPRITE, MESH_SPRITE);
       }
       break;
     }
@@ -541,7 +762,7 @@ function renderClip(
             nested: true,
             visitedCompIds: visitedComps,
           });
-          ctx.drawImage(off, -inner.width / 2, -inner.height / 2, inner.width, inner.height);
+          c.drawImage(off, -inner.width / 2, -inner.height / 2, inner.width, inner.height);
         }
       }
       break;
@@ -549,22 +770,21 @@ function renderClip(
     case 'audio':
       break;
     case 'path': {
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.globalAlpha = xf.opacity;
-      applyEffects(ctx, clip.effects);
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      c.globalAlpha = xf.opacity;
+      applyEffects(c, clip.effects);
       if (clip.pathData && clip.pathData.points.length >= 2) {
-        ctx.strokeStyle = clip.pathStrokeColor || '#6366f1';
-        ctx.lineWidth = clip.pathStrokeWidth || 3;
-        ctx.fillStyle = clip.pathFillColor || 'transparent';
-        drawPath(ctx, clip.pathData);
-        if (clip.pathFillColor && clip.pathFillColor !== 'transparent') ctx.fill();
-        ctx.stroke();
+        c.strokeStyle = clip.pathStrokeColor || '#6366f1';
+        c.lineWidth = clip.pathStrokeWidth || 3;
+        c.fillStyle = clip.pathFillColor || 'transparent';
+        drawPath(c, clip.pathData);
+        if (clip.pathFillColor && clip.pathFillColor !== 'transparent') c.fill();
+        c.stroke();
       }
       break;
     }
   }
 
-  ctx.restore();
 }
 
 function drawSelection(
@@ -649,7 +869,7 @@ export function clipWorldBounds(
   const cw = comp.width;
   const ch = comp.height;
   const xf = resolveClipTransform(clip, time, cw, ch, comp);
-  const { w: lw, h: lh } = clipLocalSize(clip, getAsset, project);
+  const { w: lw, h: lh } = clipLocalSize(clip, getAsset, project, time - clip.start);
   const w = Math.max(1, lw * Math.abs(xf.scaleX));
   const h = Math.max(1, lh * Math.abs(xf.scaleY));
   let cx = cw / 2 + xf.x;

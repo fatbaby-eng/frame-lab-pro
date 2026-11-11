@@ -12,8 +12,10 @@ import {
   TRANSFORM_PROP_KEYS, isAnimated, applyBezierToKeyframe, hydrateAnimatedProperty, hydrateTextStyle,
   newKeyframeId, nextClipName, wouldCreateCompCycle, compositionIsReferenced,
   ensureMeshAnimProps, ensureAnimProp, getAnimProp, withAnimProp, clipAnimKeys, isMeshColorKey,
+  ensureShapeAnimProps,
 } from './types';
 import { alignedLocalPosition, clipWorldBounds, type AlignBounds } from './render';
+import { linkedProjectUrl, resolveAssetUrls } from './projectLink';
 
 const AUTOSAVE_KEY = 'framelab-autosave-v3';
 
@@ -104,6 +106,8 @@ interface EditorContextType {
   // Assets
   addAsset: (asset: Asset) => void;
   updateAsset: (assetId: string, patch: Partial<Asset>) => void;
+  /** Swap the file behind an asset; every clip using it follows (one undo step). */
+  replaceAsset: (assetId: string, patch: Partial<Asset>) => void;
   deleteAsset: (assetId: string) => void;
   // Project
   setProjectName: (name: string) => void;
@@ -116,6 +120,8 @@ interface EditorContextType {
   /** Start over with a single composition — the start screen's "blank" door. */
   newProjectWith: (comp: Composition, name?: string) => void;
   hasAutosave: () => boolean;
+  /** Open a project from a URL (the `?project=` link). It is not autosaved until the visitor starts their own. */
+  loadProjectUrl: (url: string) => Promise<void>;
   saveProjectFile: () => Promise<void>;
   loadProjectFile: (file: File) => Promise<void>;
   // History
@@ -165,6 +171,7 @@ function hydrateLoadedProject(parsed: Project): Project | null {
         if (!clip.transform.anchorX) clip.transform.anchorX = hydrateAnimatedProperty({ keyframes: [{ time: 0, value: 0, easing: 'linear' }] });
         if (!clip.transform.anchorY) clip.transform.anchorY = hydrateAnimatedProperty({ keyframes: [{ time: 0, value: 0, easing: 'linear' }] });
         if (clip.type === 'mesh3d') Object.assign(clip, ensureMeshAnimProps(clip));
+        if (clip.type === 'shape' || clip.revealProgress) Object.assign(clip, ensureShapeAnimProps(clip));
         if (clip.type === 'text') clip.textStyle = hydrateTextStyle(clip.textStyle);
       }
       if (track.solo == null) track.solo = false;
@@ -185,7 +192,8 @@ function loadAutosave(): Project | null {
 
 export function EditorProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<EditorState>(() => ({
-    project: loadAutosave() ?? createDefaultProject(),
+    // A project opened by link leaves the visitor's own autosave alone.
+    project: (linkedProjectUrl() ? null : loadAutosave()) ?? createDefaultProject(),
     currentTime: 0,
     isPlaying: false,
     zoom: 60,
@@ -209,6 +217,8 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   const futureRef = useRef<Project[]>([]);
   const lastMutateRef = useRef({ t: 0, kind: '' });
   const clipboardRef = useRef<Clip | null>(null);
+  /** False while showing a project opened by link: edits are not autosaved over the visitor's own work. */
+  const autosaveRef = useRef(!linkedProjectUrl());
   const toastTimerRef = useRef<number>(0);
 
   const pushHistory = useCallback((project: Project, kind: string) => {
@@ -274,6 +284,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
 
   // Autosave
   useEffect(() => {
+    if (!autosaveRef.current) return;
     const id = window.setTimeout(() => {
       try {
         const serializable = cloneProject(state.project);
@@ -1115,6 +1126,34 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
+  const replaceAsset = useCallback((assetId: string, patch: Partial<Asset>) => {
+    mutate('replaceAsset', s => {
+      const old = s.project.assets.find(a => a.id === assetId);
+      if (!old) return s;
+      const next = { ...old, ...patch, id: assetId };
+      const timed = next.type === 'audio' || next.type === 'video';
+      const fit = (clip: Clip): Clip => {
+        if (clip.assetId !== assetId || !timed || !next.duration) return clip;
+        // A clip that played the whole old file plays the whole new one; any other trim is kept, cut to fit.
+        const wholeOld = old.duration != null && clip.sourceStart < 0.01 && Math.abs(clip.duration - old.duration) < 0.05;
+        if (wholeOld) return { ...clip, duration: next.duration };
+        const room = Math.max(0.05, next.duration - clip.sourceStart);
+        return clip.duration > room ? { ...clip, duration: room } : clip;
+      };
+      return {
+        ...s,
+        project: {
+          ...s.project,
+          assets: s.project.assets.map(a => a.id === assetId ? next : a),
+          compositions: s.project.compositions.map(c => ({
+            ...c,
+            tracks: c.tracks.map(t => ({ ...t, clips: t.clips.map(fit) })),
+          })),
+        },
+      };
+    });
+  }, [mutate]);
+
   const deleteAsset = useCallback((assetId: string) => {
     mutate('deleteAsset', s => ({
       ...s,
@@ -1337,6 +1376,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   }, [mutate]);
 
   const newProject = useCallback(() => {
+    autosaveRef.current = true;
     historyRef.current = [];
     futureRef.current = [];
     localStorage.removeItem(AUTOSAVE_KEY);
@@ -1378,6 +1418,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   const loadProject = useCallback((project: Project) => {
     const parsed = hydrateLoadedProject(cloneProject(project));
     if (!parsed) throw new Error('Invalid project');
+    autosaveRef.current = true;
     historyRef.current = [];
     futureRef.current = [];
     setState(s => ({
@@ -1393,6 +1434,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const newProjectWith = useCallback((comp: Composition, name?: string) => {
+    autosaveRef.current = true;
     localStorage.removeItem(AUTOSAVE_KEY);
     loadProject({
       id: `project-${Date.now()}`,
@@ -1403,6 +1445,26 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     });
   }, [loadProject]);
 
+  const loadProjectUrl = useCallback(async (url: string) => {
+    const res = await fetch(url, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`Could not fetch the project (${res.status})`);
+    const parsed = hydrateLoadedProject(resolveAssetUrls(await res.json() as Project, res.url || url));
+    if (!parsed) throw new Error('Invalid project file');
+    autosaveRef.current = false;
+    historyRef.current = [];
+    futureRef.current = [];
+    setState(s => ({
+      ...s,
+      project: parsed,
+      currentTime: 0,
+      isPlaying: false,
+      selectedClipId: null, selectedClipIds: [],
+      selectedTrackId: null,
+      canUndo: false,
+      canRedo: false,
+    }));
+  }, []);
+
   const hasAutosave = useCallback(() => {
     try { return !!localStorage.getItem(AUTOSAVE_KEY); } catch { return false; }
   }, []);
@@ -1411,6 +1473,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     const text = await file.text();
     const parsed = hydrateLoadedProject(JSON.parse(text) as Project);
     if (!parsed) throw new Error('Invalid project file');
+    autosaveRef.current = true;
     historyRef.current = [];
     futureRef.current = [];
     setState(s => ({
@@ -1475,10 +1538,10 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     patchTransform, patchAnim, removeKeyframeAt, setKeyframeEasing, patchKeyframe, setTrackVolume, jumpKeyframe,
     duplicateClip, splitClip, trimClipEdge, copyClip, pasteClip, nudgeClip, nudgeClips, alignClipToComp, alignClips, setTransformValuesMany, toggleExpanded,
     toggleTrackVisibility, toggleTrackLock, toggleTrackMute, toggleTrackSolo, addTrack, deleteTrack, reorderTracks,
-    addAsset, updateAsset, deleteAsset,
+    addAsset, updateAsset, replaceAsset, deleteAsset,
     setProjectName, setCompositionDuration, updateComposition, renameComposition,
     setActiveComposition, addComposition, duplicateComposition, deleteComposition, addCompositionAsLayer,
-    newProject, loadProject, newProjectWith, hasAutosave, saveProjectFile, loadProjectFile,
+    newProject, loadProject, newProjectWith, hasAutosave, saveProjectFile, loadProjectFile, loadProjectUrl,
     undo, redo,
     getActiveComposition,
     showToast, clearToast,

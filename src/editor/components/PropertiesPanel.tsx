@@ -3,13 +3,16 @@ import {
   evalProp, evalColorProp, hasKeyframeAt, easingAt, COMP_PRESETS, findClip, isAnimated, wouldCreateParentCycle,
   EFFECT_DEFS, MESH_PRIMITIVES, MESH_PROP_DEFS, wouldCreateCompCycle,
   ensureAnimProp, parseHexColor, hydrateTextStyle, TEXT_FONTS,
+  SHAPE_TYPES, SHAPE_PROP_DEFS, REVEAL_PROP_DEFS, makeAnimatedProperty, evalExtra, hasReveal,
 } from '../types';
-import type { Transform, TextStyle, TextAlign, TextVAlign, Easing, LayerEffect, EffectType, MeshShape, MeshPropDef } from '../types';
+import type { Transform, TextStyle, TextAlign, TextVAlign, Easing, LayerEffect, EffectType, MeshShape, PropDef } from '../types';
+import { canReplace, pickReplacement } from '../replaceMedia';
+import { measurePathBox } from '../render';
 import {
   Type, Image, Video, Music, Box, Shapes, Sparkles, Trash2,
   ChevronDown, ChevronRight, Link, Unlink, Diamond, Settings, Timer, Layers, Copy,
   AlignVerticalJustifyStart, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd,
-  AlignHorizontalSpaceBetween, Bold, Italic, Underline, CaseSensitive,
+  AlignHorizontalSpaceBetween, Bold, Italic, Underline, CaseSensitive, RefreshCw, X,
 } from 'lucide-react';
 import { useState, useRef, type KeyboardEvent } from 'react';
 import AlignBar from './AlignBar';
@@ -55,7 +58,7 @@ export default function PropertiesPanel() {
     state, setTransformValues, updateClipProperty, deleteClip, showToast,
     toggleKeyframe, toggleAnimated, setKeyframeEasing, updateComposition, setCompositionDuration,
     setAutoKey, setTrackVolume, setActiveComposition, duplicateComposition, renameComposition,
-    alignClipToComp,
+    alignClipToComp, replaceAsset,
   } = useEditor();
   const { selectedClipId, autoKey } = state;
 
@@ -171,8 +174,27 @@ export default function PropertiesPanel() {
     }
   };
 
-  const shapeWidth = Math.round(100 * scaleX);
-  const shapeHeight = Math.round(100 * scaleY);
+  const shapeWidth = Math.round(evalExtra(clip, 'shapeW', t) * scaleX);
+  const shapeHeight = Math.round(evalExtra(clip, 'shapeH', t) * scaleY);
+  const mediaAsset = clip.assetId ? state.project.assets.find(a => a.id === clip.assetId) : undefined;
+  const revealOn = hasReveal(clip);
+  const toggleReveal = () => {
+    if (revealOn) {
+      for (const def of REVEAL_PROP_DEFS) updateClipProperty(clip.id, def.key, undefined);
+      return;
+    }
+    // Start hidden at the playhead and fully shown a second later, so the wipe is visible straight away.
+    const t0 = Math.max(0, t);
+    updateClipProperty(clip.id, 'revealProgress', {
+      enabled: true,
+      keyframes: [
+        { time: t0, value: 0, easing: 'linear' },
+        { time: Math.min(clip.duration, t0 + 1), value: 100, easing: 'linear' },
+      ],
+    });
+    updateClipProperty(clip.id, 'revealAngle', makeAnimatedProperty(0));
+    updateClipProperty(clip.id, 'revealFeather', makeAnimatedProperty(0));
+  };
   const effects = clip.effects ?? [];
   const nestedSource = clip.type === 'comp'
     ? state.project.compositions.find(c => c.id === clip.compositionId)
@@ -427,25 +449,66 @@ export default function PropertiesPanel() {
         {clip.type === 'shape' && (
           <div className="border-b border-surface-700">
             <div className="px-3 py-2 text-xs font-medium text-slate-300">Shape</div>
-            <div className="px-3 pb-3 space-y-2">
+            <div className="px-3 pb-3 space-y-2.5">
               <div>
                 <label className="text-[10px] text-slate-500 mb-1 block">Shape Type</label>
-                <div className="flex gap-1 bg-surface-700 rounded p-0.5">
-                  {(['rect', 'circle', 'triangle', 'star'] as const).map(s => (
-                    <button key={s} onClick={() => updateClipProperty(clip.id, 'shapeType', s)} className={`flex-1 py-0.5 text-[10px] rounded capitalize ${clip.shapeType === s ? 'bg-accent text-white' : 'text-slate-400 hover:text-white'}`}>{s}</button>
+                <div className="grid grid-cols-3 gap-0.5 bg-surface-700 rounded p-0.5">
+                  {SHAPE_TYPES.map(st => (
+                    <button key={st.id} onClick={() => updateClipProperty(clip.id, 'shapeType', st.id)} className={`py-0.5 text-[10px] rounded ${(clip.shapeType ?? 'rect') === st.id ? 'bg-accent text-white' : 'text-slate-400 hover:text-white'}`}>{st.label}</button>
                   ))}
                 </div>
               </div>
+              {clip.shapeType === 'path' && (
+                <div>
+                  <label htmlFor="shape-path" className="text-[10px] text-slate-500 mb-1 block">SVG path data</label>
+                  <textarea
+                    id="shape-path"
+                    rows={3}
+                    spellCheck={false}
+                    placeholder="M0,-50 L50,50 L-50,50 Z"
+                    defaultValue={clip.shapePath ?? ''}
+                    key={clip.id}
+                    onKeyDown={stopKeys}
+                    onBlur={e => {
+                      const d = e.target.value.trim();
+                      updateClipProperty(clip.id, 'shapePath', d || undefined);
+                      updateClipProperty(clip.id, 'shapePathBox', d ? measurePathBox(d) ?? undefined : undefined);
+                    }}
+                    className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-[10px] font-mono text-white focus:border-accent outline-none resize-y"
+                  />
+                  <p className="text-[9px] text-slate-500 mt-0.5">Paste the d of any SVG path. It is fitted to Width and Height.</p>
+                </div>
+              )}
+              {SHAPE_PROP_DEFS.filter(d => d.key !== 'shapeStrokeW').map(def => (
+                <AnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
+              ))}
               <div className="flex gap-2">
                 <div className="flex-1">
-                  <label className="text-[10px] text-slate-500 mb-1 block">Color</label>
-                  <input type="color" value={clip.shapeColor || '#6366f1'} onChange={e => updateClipProperty(clip.id, 'shapeColor', e.target.value)} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] text-slate-500">Fill</label>
+                    <button
+                      type="button"
+                      onClick={() => updateClipProperty(clip.id, 'shapeColor', clip.shapeColor === 'none' ? '#6366f1' : 'none')}
+                      className="text-[9px] text-slate-400 hover:text-white"
+                    >
+                      {clip.shapeColor === 'none' ? 'Add fill' : 'No fill'}
+                    </button>
+                  </div>
+                  {clip.shapeColor === 'none'
+                    ? <div className="h-7 rounded border border-dashed border-surface-600 text-[9px] text-slate-500 flex items-center justify-center">None</div>
+                    : <input type="color" aria-label="Fill color" value={clip.shapeColor || '#6366f1'} onChange={e => updateClipProperty(clip.id, 'shapeColor', e.target.value)} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />}
                 </div>
                 <div className="flex-1">
-                  <label className="text-[10px] text-slate-500 mb-1 block">Stroke</label>
-                  <input type="number" value={clip.shapeStroke || 0} onChange={e => updateClipProperty(clip.id, 'shapeStroke', parseInt(e.target.value) || 0)} className="w-full px-2 py-1 rounded bg-surface-700 border border-surface-600 text-xs text-white focus:border-accent outline-none" />
+                  <label className="text-[10px] text-slate-500 mb-1 block">Stroke color</label>
+                  <input type="color" aria-label="Stroke color" value={clip.shapeStrokeColor || '#ffffff'} onChange={e => updateClipProperty(clip.id, 'shapeStrokeColor', e.target.value)} className="w-full h-7 rounded bg-surface-700 border border-surface-600 cursor-pointer" />
                 </div>
               </div>
+              <AnimRow clipId={clip.id} clipTime={t} def={SHAPE_PROP_DEFS.find(d => d.key === 'shapeStrokeW')!} />
+              <label className="flex items-center gap-2 text-[10px] text-slate-400">
+                <input type="checkbox" checked={!!clip.shapeRound} onChange={e => updateClipProperty(clip.id, 'shapeRound', e.target.checked)} className="accent-accent" />
+                Round corners on the stroke
+              </label>
+              <p className="text-[9px] text-slate-500">Width, Height and Stroke animate on their own: grow a ring by its size and the line stays the same weight.</p>
             </div>
           </div>
         )}
@@ -550,7 +613,7 @@ export default function PropertiesPanel() {
               )}
 
               {clip.meshShape !== 'model' && (
-                <MeshAnimRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshSegments')!} />
+                <AnimRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshSegments')!} />
               )}
 
               <div className="flex gap-2 items-end">
@@ -563,10 +626,10 @@ export default function PropertiesPanel() {
                 </label>
               </div>
 
-              <MeshAnimRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshMetalness')!} />
-              <MeshAnimRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshRoughness')!} />
+              <AnimRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshMetalness')!} />
+              <AnimRow clipId={clip.id} clipTime={t} def={MESH_PROP_DEFS.find(d => d.key === 'meshRoughness')!} />
               {MESH_PROP_DEFS.filter(d => d.key === 'meshRotX' || d.key === 'meshRotY' || d.key === 'meshRotZ').map(def => (
-                <MeshAnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
+                <AnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
               ))}
 
               <div className="pt-1 border-t border-surface-700/60">
@@ -583,7 +646,7 @@ export default function PropertiesPanel() {
                 </select>
                 <p className="text-[9px] text-slate-500 mb-2">Import an image, then map it onto this object. Use Plane for a photo card.</p>
                 {MESH_PROP_DEFS.filter(d => d.group === 'texture').map(def => (
-                  <MeshAnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
+                  <AnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
                 ))}
               </div>
 
@@ -598,7 +661,7 @@ export default function PropertiesPanel() {
                   </div>
                 </div>
                 {MESH_PROP_DEFS.filter(d => d.group === 'light' && !d.color).map(def => (
-                  <MeshAnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
+                  <AnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
                 ))}
               </div>
             </div>
@@ -620,6 +683,47 @@ export default function PropertiesPanel() {
               </div>
               <p className="text-[9px] text-slate-500">Clip level uses Opacity. Mute and Solo on the track header still apply.</p>
             </div>
+          </div>
+        )}
+
+        {canReplace(mediaAsset) && (
+          <div className="border-b border-surface-700">
+            <div className="px-3 py-2 text-xs font-medium text-slate-300">Media</div>
+            <div className="px-3 pb-3 space-y-2">
+              <div className="text-[10px] text-slate-400 truncate" title={mediaAsset.name}>{mediaAsset.name}</div>
+              <button
+                type="button"
+                onClick={() => pickReplacement(mediaAsset, patch => replaceAsset(mediaAsset.id, patch), showToast)}
+                className="w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-[10px] text-slate-300 border border-surface-600 transition-colors"
+              >
+                <RefreshCw size={10} /> Replace {mediaAsset.type === 'audio' ? 'audio' : mediaAsset.type === 'video' ? 'video' : 'image'}…
+              </button>
+              <p className="text-[9px] text-slate-500">Every clip using this file keeps its place, keyframes and effects. A clip that played the whole old file plays the whole new one.</p>
+            </div>
+          </div>
+        )}
+
+        {clip.type !== 'path' && clip.type !== 'audio' && (
+          <div className="border-b border-surface-700">
+            <div className="flex items-center justify-between px-3 py-2">
+              <span className="text-xs font-medium text-slate-300">Reveal</span>
+              <button
+                type="button"
+                onClick={toggleReveal}
+                className={`flex items-center gap-1 text-[10px] ${revealOn ? 'text-slate-500 hover:text-red-400' : 'text-accent-light hover:text-white'}`}
+                title={revealOn ? 'Remove the reveal' : 'Wipe this layer on'}
+              >
+                {revealOn ? <><X size={10} /> Remove</> : '+ Add wipe'}
+              </button>
+            </div>
+            {revealOn && (
+              <div className="px-3 pb-3 space-y-2.5">
+                {REVEAL_PROP_DEFS.map(def => (
+                  <AnimRow key={def.key} clipId={clip.id} clipTime={t} def={def} />
+                ))}
+                <p className="text-[9px] text-slate-500">Reveal 0–100 % across the layer. Angle 0 wipes left to right, 90 top to bottom. Feather softens the edge.</p>
+              </div>
+            )}
           </div>
         )}
 
@@ -767,7 +871,7 @@ export default function PropertiesPanel() {
   );
 }
 
-function MeshAnimRow({ clipId, clipTime, def }: { clipId: string; clipTime: number; def: MeshPropDef }) {
+function AnimRow({ clipId, clipTime, def }: { clipId: string; clipTime: number; def: PropDef }) {
   const { state, setAnimValue, toggleKeyframe, toggleAnimated, setKeyframeEasing } = useEditor();
   const comp = state.project.compositions.find(c => c.id === state.project.activeCompositionId)!;
   const clip = findClip(comp, clipId);
@@ -792,7 +896,7 @@ function MeshAnimRow({ clipId, clipTime, def }: { clipId: string; clipTime: numb
   );
 }
 
-function MeshColorRow({ clipId, clipTime, def }: { clipId: string; clipTime: number; def: MeshPropDef }) {
+function MeshColorRow({ clipId, clipTime, def }: { clipId: string; clipTime: number; def: PropDef }) {
   const { state, setAnimValue, toggleKeyframe, toggleAnimated, setKeyframeEasing } = useEditor();
   const comp = state.project.compositions.find(c => c.id === state.project.activeCompositionId)!;
   const clip = findClip(comp, clipId);

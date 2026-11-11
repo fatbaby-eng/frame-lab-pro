@@ -19,6 +19,27 @@ npm run build:site   # toddboswell.com build, base /framelab/ -> dist-site/ (bea
 
 React 19, TypeScript, Tailwind 4, Three.js via react-three-fiber.
 
+## Opening a project by link
+
+`/framelab/?project=demos/song/song.flab.json` opens that project straight
+into the editor, skipping the start screen. The path is relative to the page,
+and media paths inside the project are relative to the project file, so a
+demo folder can sit anywhere next to Frame Lab. A linked project is not
+autosaved, so it never replaces a visitor's own work; Save downloads a copy.
+
+## Shapes, reveal and replacing media
+
+- Shape layers have Width, Height and Stroke as their own animatable
+  properties, with fill (or none), stroke colour and round joins. Growing a
+  shape by its size keeps the outline's weight; layer scale still scales
+  everything. Types: rect, ellipse, triangle, star, sparkle, and Custom (any
+  SVG path, fitted to the size).
+- Reveal is a linear wipe on any visual layer: Reveal 0–100 %, Angle and
+  Feather, all keyframeable.
+- Replace (the arrows on an asset, or Media › Replace on a clip) swaps the
+  file behind an asset. Every clip using it keeps its place, keyframes and
+  effects; a clip that played the whole old file plays the whole new one.
+
 ## Start screen and Help
 
 `public/bench-splash.js` is the first-open screen and Help panel shared

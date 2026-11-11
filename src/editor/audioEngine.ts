@@ -110,14 +110,16 @@ export function stopTransportAudio(project: Project) {
 }
 
 export async function decodeAudioAsset(asset: Asset): Promise<AudioBuffer | null> {
-  if (decodeCache.has(asset.id)) return decodeCache.get(asset.id)!;
+  // Keyed by file as well as asset, so a replaced file is decoded afresh.
+  const key = `${asset.id}|${asset.url}`;
+  if (decodeCache.has(key)) return decodeCache.get(key)!;
   if (!asset.url) return null;
   try {
     const ctx = audioContext();
     const res = await fetch(asset.url);
     const raw = await res.arrayBuffer();
     const buffer = await ctx.decodeAudioData(raw.slice(0));
-    decodeCache.set(asset.id, buffer);
+    decodeCache.set(key, buffer);
     return buffer;
   } catch {
     return null;

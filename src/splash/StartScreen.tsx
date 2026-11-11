@@ -3,6 +3,7 @@
 // supplies the doors and listens for the editor asking to reopen it.
 import { useEffect, useRef } from 'react';
 import { useEditor } from '../editor/EditorContext';
+import { linkedProjectUrl } from '../editor/projectLink';
 import { createEmptyComposition, COMP_PRESETS, type Composition, type Project } from '../editor/types';
 import { START_TEMPLATES } from './templates';
 import { renderFrame } from '../editor/render';
@@ -171,6 +172,15 @@ export default function StartScreen() {
     window.addEventListener('message', onMsg);
     if (window.opener && new URLSearchParams(location.search).has('handoff')) {
       try { window.opener.postMessage({ type: 'framelab-ready' }, '*'); } catch { /* opener gone */ }
+    }
+
+    // ---- A project opened by link (?project=...) ----
+    const linked = took ? null : linkedProjectUrl();
+    if (linked) {
+      took = true;
+      void editorRef.current.loadProjectUrl(linked)
+        .then(() => editorRef.current.showToast('Opened from a link. Save keeps a copy of your changes.'))
+        .catch(() => { editorRef.current.showToast('Could not open the linked project'); open(false); });
     }
 
     if (!took) open(false);

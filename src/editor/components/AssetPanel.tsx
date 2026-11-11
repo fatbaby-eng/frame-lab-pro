@@ -3,9 +3,10 @@ import { useEditor } from '../EditorContext';
 import type { Asset, LayerType } from '../types';
 import { wouldCreateCompCycle, makeAnimatedProperty, parseHexColor } from '../types';
 import { analyzeAudioAsset } from '../audioEngine';
+import { canReplace, pickReplacement } from '../replaceMedia';
 import {
   Upload, Image, Video, Music, FileText, Box, Trash2, Plus,
-  Film, PenTool, Layers,
+  Film, PenTool, Layers, RefreshCw,
 } from 'lucide-react';
 
 const typeIcons: Record<LayerType, typeof Image> = {
@@ -34,7 +35,8 @@ function layerTypeForFile(file: File): LayerType {
 }
 
 export default function AssetPanel() {
-  const { state, addAsset, deleteAsset, addClip, showToast, updateAsset, addCompositionAsLayer, setActiveComposition } = useEditor();
+  const { state, addAsset, deleteAsset, addClip, showToast, updateAsset, replaceAsset, addCompositionAsLayer, setActiveComposition } = useEditor();
+  const onReplace = (asset: Asset) => pickReplacement(asset, patch => replaceAsset(asset.id, patch), showToast);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -187,18 +189,18 @@ export default function AssetPanel() {
       >
         {/* Video */}
         {assetsByType('video').length > 0 && (
-          <AssetSection title="Video" assets={assetsByType('video')} onAdd={addToTimeline} onDelete={deleteAsset} />
+          <AssetSection title="Video" assets={assetsByType('video')} onAdd={addToTimeline} onDelete={deleteAsset} onReplace={onReplace} />
         )}
         {/* Images */}
         {assetsByType('image').length > 0 && (
-          <AssetSection title="Images" assets={assetsByType('image')} onAdd={addToTimeline} onDelete={deleteAsset} />
+          <AssetSection title="Images" assets={assetsByType('image')} onAdd={addToTimeline} onDelete={deleteAsset} onReplace={onReplace} />
         )}
         {/* Audio */}
         {assetsByType('audio').length > 0 && (
-          <AssetSection title="Audio" assets={assetsByType('audio')} onAdd={addToTimeline} onDelete={deleteAsset} />
+          <AssetSection title="Audio" assets={assetsByType('audio')} onAdd={addToTimeline} onDelete={deleteAsset} onReplace={onReplace} />
         )}
         {assetsByType('mesh3d').length > 0 && (
-          <AssetSection title="3D Models" assets={assetsByType('mesh3d')} onAdd={addToTimeline} onDelete={deleteAsset} />
+          <AssetSection title="3D Models" assets={assetsByType('mesh3d')} onAdd={addToTimeline} onDelete={deleteAsset} onReplace={onReplace} />
         )}
 
         <div>
@@ -260,11 +262,12 @@ export default function AssetPanel() {
   );
 }
 
-function AssetSection({ title, assets, onAdd, onDelete }: {
+function AssetSection({ title, assets, onAdd, onDelete, onReplace }: {
   title: string;
   assets: Asset[];
   onAdd: (a: Asset) => void;
   onDelete: (id: string) => void;
+  onReplace: (a: Asset) => void;
 }) {
   return (
     <div>
@@ -298,6 +301,16 @@ function AssetSection({ title, assets, onAdd, onDelete }: {
             >
               <Plus size={10} />
             </button>
+            {canReplace(asset) && (
+              <button
+                onClick={() => onReplace(asset)}
+                className="opacity-0 group-hover:opacity-100 focus:opacity-100 w-5 h-5 rounded hover:bg-accent/20 text-slate-500 hover:text-accent-light flex items-center justify-center transition-all"
+                title="Replace the file (clips keep their place)"
+                aria-label={`Replace ${asset.name}`}
+              >
+                <RefreshCw size={10} />
+              </button>
+            )}
             <button
               onClick={() => onDelete(asset.id)}
               className="opacity-0 group-hover:opacity-100 w-5 h-5 rounded hover:bg-red-500/20 text-slate-500 hover:text-red-400 flex items-center justify-center transition-all"

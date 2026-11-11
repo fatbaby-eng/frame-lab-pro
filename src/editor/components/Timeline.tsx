@@ -3,7 +3,7 @@ import { useEditor } from '../EditorContext';
 import type { AnimKey, AnimatedProperty, Clip, LayerType, Track } from '../types';
 import {
   hasKeyframeAt, isAnimated, snapToTimes, collectSnapTimes, findClip,
-  MESH_PROP_DEFS, getAnimProp, ensureAnimProp,
+  clipExtraDefs, getAnimProp, ensureAnimProp,
 } from '../types';
 import CurveEditor from './CurveEditor';
 import {
@@ -26,11 +26,9 @@ const TRANSFORM_KEYS: { key: AnimKey; label: string }[] = [
 ];
 
 function layerAnimRows(clip: Clip): { key: AnimKey; label: string }[] {
-  if (clip.type !== 'mesh3d') return TRANSFORM_KEYS;
-  return [
-    ...TRANSFORM_KEYS,
-    ...MESH_PROP_DEFS.map(d => ({ key: d.key as AnimKey, label: d.label })),
-  ];
+  const extra = clipExtraDefs(clip);
+  if (!extra.length) return TRANSFORM_KEYS;
+  return [...TRANSFORM_KEYS, ...extra.map(d => ({ key: d.key as AnimKey, label: d.label }))];
 }
 
 type DragMode = 'move' | 'resize-left' | 'resize-right' | 'playhead' | 'keyframe' | 'work-in' | 'work-out' | 'reorder' | null;

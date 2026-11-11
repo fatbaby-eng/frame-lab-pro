@@ -401,9 +401,26 @@ export interface Clip {
   // Layer-specific properties
   textContent?: string;
   textStyle?: TextStyle;
-  shapeType?: 'rect' | 'circle' | 'triangle' | 'star';
+  shapeType?: ShapeType;
+  /** Fill colour, or 'none' for an outline only. */
   shapeColor?: string;
+  /** Legacy fixed stroke width; shapeStrokeW (animatable) wins when present. */
   shapeStroke?: number;
+  shapeStrokeColor?: string;
+  /** Round joins and caps on the outline. */
+  shapeRound?: boolean;
+  /** Drawn size in layer pixels. The outline keeps its width as these change (layer scale still scales it). */
+  shapeW?: AnimatedProperty;
+  shapeH?: AnimatedProperty;
+  shapeStrokeW?: AnimatedProperty;
+  /** SVG path data for shapeType 'path'. */
+  shapePath?: string;
+  /** Bounds of shapePath [x, y, w, h]; the path is fitted from these to the shape's size. */
+  shapePathBox?: [number, number, number, number];
+  /** Reveal (linear wipe). Present = on. Progress 0–100 %, angle in degrees (0 = reveal left to right), feather in px. */
+  revealProgress?: AnimatedProperty;
+  revealAngle?: AnimatedProperty;
+  revealFeather?: AnimatedProperty;
   effectParams?: Record<string, number>;
   // 3D mesh
   meshShape?: MeshShape;
@@ -442,6 +459,17 @@ export interface Clip {
   /** Nested composition id when type === 'comp'. */
   compositionId?: string;
 }
+
+export type ShapeType = 'rect' | 'circle' | 'triangle' | 'star' | 'sparkle' | 'path';
+
+export const SHAPE_TYPES: { id: ShapeType; label: string }[] = [
+  { id: 'rect', label: 'Rect' },
+  { id: 'circle', label: 'Ellipse' },
+  { id: 'triangle', label: 'Triangle' },
+  { id: 'star', label: 'Star' },
+  { id: 'sparkle', label: 'Sparkle' },
+  { id: 'path', label: 'Custom' },
+];
 
 export type TextAlign = 'left' | 'center' | 'right' | 'justify';
 export type TextVAlign = 'top' | 'middle' | 'bottom';
@@ -522,20 +550,28 @@ export type MeshAnimKey =
   | 'meshLightAzimuth' | 'meshLightElevation'
   | 'meshLightAmbientColor' | 'meshLightKeyColor';
 
-export type AnimKey = keyof Transform | MeshAnimKey;
+export type ShapeAnimKey = 'shapeW' | 'shapeH' | 'shapeStrokeW';
+export type RevealAnimKey = 'revealProgress' | 'revealAngle' | 'revealFeather';
+/** Animatable properties that live on the clip rather than in its transform. */
+export type ExtraAnimKey = MeshAnimKey | ShapeAnimKey | RevealAnimKey;
 
-export interface MeshPropDef {
-  key: MeshAnimKey;
+export type AnimKey = keyof Transform | ExtraAnimKey;
+
+export interface PropDef {
+  key: ExtraAnimKey;
   label: string;
   min: number;
   max: number;
   step: number;
   defaultValue: number;
-  group: 'object' | 'texture' | 'light';
+  group: 'object' | 'texture' | 'light' | 'shape' | 'reveal';
   color?: boolean;
 }
 
-export const MESH_PROP_DEFS: MeshPropDef[] = [
+/** @deprecated kept for older imports; every extra property uses PropDef. */
+export type MeshPropDef = PropDef;
+
+export const MESH_PROP_DEFS: PropDef[] = [
   { key: 'meshRotX', label: 'Rotate X', min: -360, max: 360, step: 1, defaultValue: 18, group: 'object' },
   { key: 'meshRotY', label: 'Rotate Y', min: -360, max: 360, step: 1, defaultValue: 0, group: 'object' },
   { key: 'meshRotZ', label: 'Rotate Z', min: -360, max: 360, step: 1, defaultValue: 0, group: 'object' },
@@ -557,10 +593,28 @@ export const MESH_PROP_DEFS: MeshPropDef[] = [
   { key: 'meshLightKeyColor', label: 'Key color', min: 0, max: 0xffffff, step: 1, defaultValue: 0xffffff, group: 'light', color: true },
 ];
 
-export const MESH_PROP_KEYS: MeshAnimKey[] = MESH_PROP_DEFS.map(d => d.key);
-export const MESH_PROP_BY_KEY: Record<MeshAnimKey, MeshPropDef> = Object.fromEntries(
-  MESH_PROP_DEFS.map(d => [d.key, d])
-) as Record<MeshAnimKey, MeshPropDef>;
+export const SHAPE_PROP_DEFS: PropDef[] = [
+  { key: 'shapeW', label: 'Width', min: 0, max: 4000, step: 1, defaultValue: 100, group: 'shape' },
+  { key: 'shapeH', label: 'Height', min: 0, max: 4000, step: 1, defaultValue: 100, group: 'shape' },
+  { key: 'shapeStrokeW', label: 'Stroke', min: 0, max: 200, step: 0.5, defaultValue: 0, group: 'shape' },
+];
+
+export const REVEAL_PROP_DEFS: PropDef[] = [
+  { key: 'revealProgress', label: 'Reveal', min: 0, max: 100, step: 0.1, defaultValue: 100, group: 'reveal' },
+  { key: 'revealAngle', label: 'Angle', min: -360, max: 360, step: 1, defaultValue: 0, group: 'reveal' },
+  { key: 'revealFeather', label: 'Feather', min: 0, max: 500, step: 1, defaultValue: 0, group: 'reveal' },
+];
+
+export const EXTRA_PROP_DEFS: PropDef[] = [...MESH_PROP_DEFS, ...SHAPE_PROP_DEFS, ...REVEAL_PROP_DEFS];
+
+export const MESH_PROP_KEYS = MESH_PROP_DEFS.map(d => d.key) as MeshAnimKey[];
+export const SHAPE_PROP_KEYS = SHAPE_PROP_DEFS.map(d => d.key) as ShapeAnimKey[];
+export const REVEAL_PROP_KEYS = REVEAL_PROP_DEFS.map(d => d.key) as RevealAnimKey[];
+export const PROP_BY_KEY: Record<ExtraAnimKey, PropDef> = Object.fromEntries(
+  EXTRA_PROP_DEFS.map(d => [d.key, d])
+) as Record<ExtraAnimKey, PropDef>;
+/** @deprecated use PROP_BY_KEY */
+export const MESH_PROP_BY_KEY = PROP_BY_KEY;
 
 export function isTransformKey(key: string): key is keyof Transform {
   return (TRANSFORM_PROP_KEYS as string[]).includes(key);
@@ -570,8 +624,12 @@ export function isMeshAnimKey(key: string): key is MeshAnimKey {
   return (MESH_PROP_KEYS as string[]).includes(key);
 }
 
+export function isExtraAnimKey(key: string): key is ExtraAnimKey {
+  return key in PROP_BY_KEY;
+}
+
 export function isMeshColorKey(key: AnimKey): boolean {
-  return isMeshAnimKey(key) && !!MESH_PROP_BY_KEY[key].color;
+  return isExtraAnimKey(key) && !!PROP_BY_KEY[key].color;
 }
 
 export function getAnimProp(clip: Clip, key: AnimKey): AnimatedProperty | undefined {
@@ -608,12 +666,42 @@ export function ensureMeshAnimProps(clip: Clip): Clip {
 export function ensureAnimProp(clip: Clip, key: AnimKey): AnimatedProperty {
   const existing = getAnimProp(clip, key);
   if (existing?.keyframes.length) return existing;
-  if (isMeshAnimKey(key)) return makeAnimatedProperty(MESH_PROP_BY_KEY[key].defaultValue);
+  if (key === 'shapeStrokeW') return makeAnimatedProperty(clip.shapeStroke ?? 0);
+  if (isExtraAnimKey(key)) return makeAnimatedProperty(PROP_BY_KEY[key].defaultValue);
   return makeAnimatedProperty(0);
 }
 
+/** Shape and reveal properties, made animatable and given defaults on load. */
+export function ensureShapeAnimProps(clip: Clip): Clip {
+  let next = clip;
+  if (clip.type === 'shape') {
+    for (const def of SHAPE_PROP_DEFS) {
+      const fallback = def.key === 'shapeStrokeW' ? (clip.shapeStroke ?? 0) : def.defaultValue;
+      next = { ...next, [def.key]: coerceAnimated(clip[def.key], fallback) };
+    }
+  }
+  if (clip.revealProgress) {
+    for (const def of REVEAL_PROP_DEFS) {
+      next = { ...next, [def.key]: coerceAnimated(clip[def.key], def.defaultValue) };
+    }
+  }
+  return next;
+}
+
+/** Evaluate any clip-level animated property, falling back to its default. */
+export function evalExtra(clip: Clip, key: ExtraAnimKey, time: number): number {
+  const prop = getAnimProp(clip, key);
+  if (prop?.keyframes.length) return evalProp(prop, time);
+  if (key === 'shapeStrokeW') return clip.shapeStroke ?? 0;
+  return PROP_BY_KEY[key].defaultValue;
+}
+
+export function hasReveal(clip: Clip): boolean {
+  return !!clip.revealProgress;
+}
+
 export function evalMeshNumber(clip: Clip, key: MeshAnimKey, time: number): number {
-  const def = MESH_PROP_BY_KEY[key];
+  const def = PROP_BY_KEY[key];
   const value = evalProp(ensureAnimProp(clip, key), time);
   if (key === 'meshSegments') return Math.max(def.min, Math.min(def.max, Math.round(value)));
   return value;
@@ -628,7 +716,18 @@ export function evalMeshColor(clip: Clip, key: MeshAnimKey, time: number, fallba
 export function clipAnimKeys(clip: Clip): AnimKey[] {
   const keys: AnimKey[] = [...TRANSFORM_PROP_KEYS];
   if (clip.type === 'mesh3d') keys.push(...MESH_PROP_KEYS);
+  if (clip.type === 'shape') keys.push(...SHAPE_PROP_KEYS);
+  if (hasReveal(clip)) keys.push(...REVEAL_PROP_KEYS);
   return keys;
+}
+
+/** Extra property rows a layer shows under its transform rows in the timeline. */
+export function clipExtraDefs(clip: Clip): PropDef[] {
+  const defs: PropDef[] = [];
+  if (clip.type === 'mesh3d') defs.push(...MESH_PROP_DEFS);
+  if (clip.type === 'shape') defs.push(...SHAPE_PROP_DEFS);
+  if (hasReveal(clip)) defs.push(...REVEAL_PROP_DEFS);
+  return defs;
 }
 
 export function isAnimated(prop: AnimatedProperty | undefined): boolean {
@@ -885,6 +984,10 @@ export function createNewClip(
     shapeType: type === 'shape' ? 'rect' : undefined,
     shapeColor: type === 'shape' ? '#6366f1' : undefined,
     shapeStroke: type === 'shape' ? 0 : undefined,
+    shapeStrokeColor: type === 'shape' ? '#ffffff' : undefined,
+    shapeW: type === 'shape' ? makeAnimatedProperty(100) : undefined,
+    shapeH: type === 'shape' ? makeAnimatedProperty(100) : undefined,
+    shapeStrokeW: type === 'shape' ? makeAnimatedProperty(0) : undefined,
     meshShape: type === 'mesh3d' ? 'torus' : undefined,
     meshWireframe: type === 'mesh3d' ? false : undefined,
     meshRotX: type === 'mesh3d' ? makeAnimatedProperty(18) : undefined,

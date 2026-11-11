@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useEditor } from '../EditorContext';
 import {
   evalProp, findClip, isAnimated, keyframeBezier,
-  MESH_PROP_DEFS, getAnimProp, isMeshColorKey, clipAnimKeys, ensureAnimProp,
+  EXTRA_PROP_DEFS, getAnimProp, isMeshColorKey, clipAnimKeys, ensureAnimProp,
 } from '../types';
 import type { AnimatedProperty, AnimKey } from '../types';
 
@@ -23,12 +23,18 @@ const COLORS: Partial<Record<AnimKey, string>> = {
   meshLightAmbient: '#fde68a',
   meshLightKey: '#fdba74',
   meshLightFill: '#86efac',
+  shapeW: '#2dd4bf',
+  shapeH: '#22d3ee',
+  shapeStrokeW: '#f9a8d4',
+  revealProgress: '#facc15',
+  revealAngle: '#fb923c',
+  revealFeather: '#a3e635',
 };
 
 const LABELS: Partial<Record<AnimKey, string>> = {
   x: 'X', y: 'Y', scaleX: 'Scale X', scaleY: 'Scale Y',
   rotation: 'Rot', opacity: 'Opac', anchorX: 'Anc X', anchorY: 'Anc Y',
-  ...Object.fromEntries(MESH_PROP_DEFS.map(d => [d.key, d.label])),
+  ...Object.fromEntries(EXTRA_PROP_DEFS.map(d => [d.key, d.label])),
 };
 
 type DragKind = 'key' | 'out' | 'in';
