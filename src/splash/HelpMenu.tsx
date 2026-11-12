@@ -4,6 +4,7 @@
 // first-run screen.
 import { useEffect, useRef, useState } from 'react';
 import { HelpCircle, ChevronDown } from 'lucide-react';
+import { isStandalone, siteHome } from '../site';
 
 interface Props {
   onShortcuts: () => void;
@@ -22,15 +23,37 @@ const TIPS = [
 
 export default function HelpMenu({ onShortcuts }: Props) {
   const [open, setOpen] = useState(false);
+  // The top bar scrolls sideways, which makes the browser clip anything that
+  // hangs below it. The menu is placed against the viewport instead, from
+  // where the button is when it opens.
+  const [pos, setPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
   const wrap = useRef<HTMLDivElement>(null);
+  const btn = useRef<HTMLButtonElement>(null);
+
+  const toggle = () => {
+    if (!open && btn.current) {
+      const r = btn.current.getBoundingClientRect();
+      setPos({ top: Math.round(r.bottom + 6), right: Math.max(8, Math.round(window.innerWidth - r.right)) });
+    }
+    setOpen(o => !o);
+  };
 
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => { if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false); };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    // The button moves if the window resizes or the bar scrolls; close rather than float adrift.
+    const close = () => setOpen(false);
     document.addEventListener('mousedown', onDoc);
     document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+    };
   }, [open]);
 
   const bench = (section: 'tips' | 'about') => {
@@ -54,7 +77,8 @@ export default function HelpMenu({ onShortcuts }: Props) {
   return (
     <div ref={wrap} className="relative">
       <button
-        onClick={() => setOpen(o => !o)}
+        ref={btn}
+        onClick={toggle}
         className="flex items-center gap-1 text-slate-500 hover:text-white text-xs"
         title="Help"
         aria-haspopup="menu"
@@ -65,12 +89,18 @@ export default function HelpMenu({ onShortcuts }: Props) {
         <ChevronDown size={11} />
       </button>
       {open && (
-        <div role="menu" className="absolute right-0 top-full mt-1 w-56 bg-surface-800 border border-surface-600 rounded-md shadow-xl py-1 z-50">
+        <div role="menu" style={{ position: 'fixed', top: pos.top, right: pos.right }} className="w-56 bg-surface-800 border border-surface-600 rounded-md shadow-xl py-1 z-50">
           <button role="menuitem" className={item} onClick={() => { setOpen(false); onShortcuts(); }}>Keyboard shortcuts <span className="float-right text-slate-500">?</span></button>
           <button role="menuitem" className={item} onClick={() => bench('tips')}>Tips…</button>
           <div className="my-1 h-px bg-surface-600" />
           <button role="menuitem" className={item} onClick={() => { setOpen(false); window.dispatchEvent(new Event('framelab:start')); }}>Start screen…</button>
           <button role="menuitem" className={item} onClick={() => bench('about')}>About Frame Lab</button>
+          {isStandalone() && (
+            <>
+              <div className="my-1 h-px bg-surface-600" />
+              <a role="menuitem" className={`${item} block`} href={siteHome()}>Back to toddboswell.com</a>
+            </>
+          )}
         </div>
       )}
     </div>

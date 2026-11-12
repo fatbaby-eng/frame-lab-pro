@@ -4,6 +4,7 @@ import { exportToWebM, exportToGIF, downloadBlob, formatBytes } from '../export'
 import { mediaCacheMap } from '../mediaCache';
 import type { ExportFormat, ExportSettings, ExportProgress } from '../export';
 import { useEditor } from '../EditorContext';
+import { CREDIT } from '../../site';
 import { X, Film, Image as ImageIcon, Download, Loader2 } from 'lucide-react';
 
 interface ExportDialogProps {
@@ -187,6 +188,10 @@ export default function ExportDialog({ open, onClose, comp, project }: ExportDia
             <div className="flex justify-between text-[10px]">
               <span className="text-slate-500">Total Frames</span>
               <span className="text-slate-300">{totalFrames}</span>
+            </div>
+            <div className="flex justify-between gap-3 text-[10px]">
+              <span className="text-slate-500 shrink-0">Credit</span>
+              <span className="text-slate-300 text-right">{CREDIT}, bottom right</span>
             </div>
           </div>
 

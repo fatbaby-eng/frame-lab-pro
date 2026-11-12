@@ -1,6 +1,7 @@
 import { forEachClipAtTime, renderFrame } from './render';
 import type { Composition, Project } from './types';
 import { createExportAudioTrack } from './audioEngine';
+import { drawCredit } from './credit';
 
 export type ExportFormat = 'webm' | 'gif';
 
@@ -165,6 +166,7 @@ export async function exportToWebM(
 
     await seekVideoAssets(startTime, comp, project, assetCache);
     renderFrame(ctx, startTime, comp, project, assetCache);
+    drawCredit(ctx, comp.width, comp.height);
     requestCanvasFrame(videoTrack);
     await sleep(80, settings.signal);
     audioMix?.start();
@@ -183,6 +185,7 @@ export async function exportToWebM(
       const time = startTime + frame / fps;
       await seekVideoAssets(time, comp, project, assetCache);
       renderFrame(ctx, time, comp, project, assetCache);
+      drawCredit(ctx, comp.width, comp.height);
       requestCanvasFrame(videoTrack);
       onProgress({ frame: frame + 1, totalFrames, time, status: 'rendering' });
     }
@@ -249,6 +252,8 @@ export async function exportToGIF(
       await seekVideoAssets(time, comp, project, assetCache);
       renderFrame(ctx, time, comp, project, assetCache);
       outCtx.drawImage(canvas, 0, 0, gifW, gifH);
+      // On the scaled canvas, so the credit is sized for the GIF itself.
+      drawCredit(outCtx, gifW, gifH);
       images.push(out.toDataURL('image/jpeg', 0.82));
       onProgress({ frame: frame + 1, totalFrames, time, status: 'rendering' });
       if (frame % 4 === 0) await sleep(0, settings.signal);

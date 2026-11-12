@@ -9,6 +9,7 @@ import ExportDialog from './components/ExportDialog';
 import AlignBar from './components/AlignBar';
 import KeyboardShortcutsModal from '../components/KeyboardShortcutsModal';
 import HelpMenu from '../splash/HelpMenu';
+import { isStandalone, siteHome } from '../site';
 import { useKeyboardShortcuts, type Shortcut } from '../hooks/useKeyboardShortcuts';
 import {
   Play, Pause, SkipBack, SkipForward, ChevronLeft, ChevronRight,
@@ -125,12 +126,22 @@ export default function EditorLayout() {
     <div className="h-screen w-screen bg-surface-900 text-slate-200 flex flex-col overflow-hidden relative">
       <div className="h-10 bg-surface-800 border-b border-surface-600 flex items-center px-3 gap-2 shrink-0 overflow-x-auto scrollbar-hide">
         <div className="flex items-center gap-2 mr-4 shrink-0">
-          <img
-            src={`${import.meta.env.BASE_URL}logo.png`}
-            alt="Frame Lab"
-            title="Mr. Todd's Frame Lab"
-            className="w-7 h-7 rounded-md object-contain bg-black shrink-0"
-          />
+          {isStandalone() ? (
+            <a href={siteHome()} title="Back to toddboswell.com" className="shrink-0 rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+              <img
+                src={`${import.meta.env.BASE_URL}logo.png`}
+                alt="Back to toddboswell.com"
+                className="w-7 h-7 rounded-md object-contain bg-black"
+              />
+            </a>
+          ) : (
+            <img
+              src={`${import.meta.env.BASE_URL}logo.png`}
+              alt="Frame Lab"
+              title="Mr. Todd's Frame Lab"
+              className="w-7 h-7 rounded-md object-contain bg-black shrink-0"
+            />
+          )}
           <input
             value={project.name}
             onChange={e => setProjectName(e.target.value)}
@@ -256,7 +267,12 @@ export default function EditorLayout() {
           <span className="text-xs font-mono text-slate-500"> / {formatTime(comp.duration)}</span>
         </div>
 
-        <div className="ml-auto flex items-center gap-2 shrink-0">
+        <div className="ml-auto flex items-center gap-3 shrink-0">
+          {isStandalone() && (
+            <a href={siteHome()} className="text-xs text-slate-500 hover:text-white whitespace-nowrap" title="Back to toddboswell.com">
+              ← toddboswell.com
+            </a>
+          )}
           <HelpMenu onShortcuts={() => setShowHelp(true)} />
           <span className="text-[10px] text-slate-500">{comp.width}×{comp.height} @ {comp.fps}fps</span>
           <button onClick={() => setExportOpen(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent hover:bg-accent-dark text-white text-xs font-medium transition-colors">
