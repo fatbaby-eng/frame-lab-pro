@@ -27,6 +27,18 @@ and media paths inside the project are relative to the project file, so a
 demo folder can sit anywhere next to Frame Lab. A linked project is not
 autosaved, so it never replaces a visitor's own work; Save downloads a copy.
 
+## Samples on the start screen
+
+The app ships no sample projects. A hosting page can list its own by setting
+`window.FrameLabSamples = [{ name, meta, thumb, url }]` before the app loads;
+`url` and `thumb` are relative to the page. Samples show first among the
+template cards and open through the same loader as `?project=`. The
+toddboswell.com build loads `./demos/samples.js` for this
+(`scripts/site-beacon.mjs` adds the tag); the `demos/` folder lives in the
+site, not in this repo. The loader fetches the project and parses it as JSON
+whatever the file is called, so a host that refuses `.json` can serve it under
+another extension.
+
 ## Shapes, reveal and replacing media
 
 - Shape layers have Width, Height and Stroke as their own animatable

@@ -16,6 +16,8 @@ interface BenchSplashConfig {
   vibe?: string;
   force?: boolean;
   templates?: { name: string; meta?: string; thumb?: string; run: () => void }[];
+  templateSub?: string;
+  moreTemplates?: () => void;
   sizes?: { label: string; immediate?: boolean; run: () => void }[];
   primary?: { label: string; run: () => void };
   open?: { hint?: string; formats?: string; browse: () => void; files?: (files: FileList) => void };
@@ -41,8 +43,37 @@ interface BenchSplashApi {
   lift?: () => void;
   kewpie: string;
 }
+/**
+ * Sample projects a site wants on the start screen. The app ships none: the
+ * hosting page sets `window.FrameLabSamples` before the app loads (the
+ * toddboswell.com build reads ./demos/samples.js). `url` and `thumb` are
+ * relative to the page; the project opens through the same loader as
+ * `?project=`, so it never replaces a visitor's autosaved work.
+ */
+interface FrameLabSample { name: string; meta?: string; thumb?: string; url: string }
 declare global {
-  interface Window { BenchSplash?: BenchSplashApi }
+  interface Window { BenchSplash?: BenchSplashApi; FrameLabSamples?: FrameLabSample[] }
+}
+
+function pageUrl(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw, location.href);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function siteSamples(): { name: string; meta?: string; thumb?: string; url: string }[] {
+  const list = Array.isArray(window.FrameLabSamples) ? window.FrameLabSamples : [];
+  const out: { name: string; meta?: string; thumb?: string; url: string }[] = [];
+  for (const s of list) {
+    const url = s && typeof s.name === 'string' ? pageUrl(s.url) : null;
+    if (!url) continue;
+    out.push({ name: s.name, meta: typeof s.meta === 'string' ? s.meta : 'Sample project', thumb: pageUrl(s.thumb) || undefined, url });
+  }
+  return out;
 }
 interface Handoff {
   type?: string;
@@ -79,6 +110,8 @@ export default function StartScreen() {
   const handleRef = useRef<{ close: () => void } | null>(null);
 
   useEffect(() => {
+    // The start screen shows four template cards; "All templates" turns the page.
+    let tplPage = 0;
     const open = (force: boolean) => {
       const api = window.BenchSplash;
       if (!api) return;
@@ -107,10 +140,31 @@ export default function StartScreen() {
         tagline: 'Layers on a timeline. Keyframes, easing, audio, a little 3D.',
         vibe: 'darkroom',
         force,
-        templates: START_TEMPLATES.map(t => ({
-          name: t.name, meta: t.meta, thumb: thumbFor(t.build()) || t.thumb,
-          run: () => { editorRef.current.newProjectWith(t.build(), t.name); editorRef.current.showToast(`${t.name} — yours to change`); },
-        })),
+        ...(() => {
+          const all = [
+          // Samples the site provides come first: a finished piece to take apart.
+          ...siteSamples().map(s => ({
+            name: s.name, meta: s.meta, thumb: s.thumb,
+            run: () => {
+              editorRef.current.showToast(`Opening ${s.name}…`);
+              void editorRef.current.loadProjectUrl(s.url)
+                .then(() => editorRef.current.showToast(`${s.name}: a sample. Save keeps a copy of your changes.`))
+                .catch(() => { editorRef.current.showToast('Could not open the sample'); open(true); });
+            },
+          })),
+          ...START_TEMPLATES.map(t => ({
+            name: t.name, meta: t.meta, thumb: thumbFor(t.build()) || t.thumb,
+            run: () => { editorRef.current.newProjectWith(t.build(), t.name); editorRef.current.showToast(`${t.name} — yours to change`); },
+          })),
+          ];
+          const pages = Math.max(1, Math.ceil(all.length / 4));
+          const page = tplPage % pages;
+          return {
+            templates: all.slice(page * 4, page * 4 + 4),
+            templateSub: siteSamples().length ? 'A sample to take apart, or a head start you can throw away.' : undefined,
+            moreTemplates: pages > 1 ? () => { tplPage = (page + 1) % pages; open(true); } : undefined,
+          };
+        })(),
         sizes: [
           ...COMP_PRESETS.map(p => ({
             label: `${p.name.replace('Landscape ', '')} · ${p.fps} fps`,
